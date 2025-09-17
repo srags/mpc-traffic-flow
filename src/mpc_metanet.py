@@ -17,7 +17,7 @@ def append_number_csv(path, number):
         f.flush()
 
 def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, horizon_c, starting_traffic_vars, lanes, hold_len, 
-            initialize=None, init_fixed=None, control_one_segment=None, control_changepoints=None, safety_temporal=None, safety_spatial=None, prior_vsl=None, params=None, speed_lb=40):
+            initialize=None, init_fixed=None, control_one_segment=None, control_changepoints=None, safety_temporal=None, safety_spatial=None, prior_vsl=None, params=None, speed_lb=40, v_fd_penalty=0.1, control_zone=None):
     """
     Optimizes over horizon_p time steps given starting_traffic_vars as the boundary condition
     Parameters:
@@ -91,12 +91,13 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
 
     model.vsl = pyo.Var(range(horizon_p), segment_range, bounds=(speed_lb,max(v_free)), within=pyo.NonNegativeReals)
     model.density = pyo.Var(time_horizon, segment_range, bounds=(1e-20,p_max), within=pyo.NonNegativeReals)
-    model.velocity = pyo.Var(time_horizon, segment_range, bounds=(1e-20, max(v_free)+30), within=pyo.NonNegativeReals)
+    model.velocity = pyo.Var(time_horizon, segment_range, bounds=(0, max(v_free)+30), within=pyo.NonNegativeReals)
 
     model.queue = pyo.Var(time_horizon, bounds=(-1e-6, 10000))
     model.v_fd = pyo.Var(range(horizon_p), segment_range, bounds=(0, max(v_free)), within=pyo.NonNegativeReals)
-    model.queue_out = pyo.Var(time_horizon, bounds=(0, None), within=pyo.NonNegativeReals)
-    model.c = pyo.Var(time_horizon, within=pyo.NonNegativeReals) # Aux variable for inflow min expression
+    model.queue_out = pyo.Var(time_horizon, bounds=(0, q_capacity[0] * lanes[0] + 50), within=pyo.NonNegativeReals) #q_capacity[0] * lanes[0]
+    model.c = pyo.Var(time_horizon, bounds=(0,1), within=pyo.NonNegativeReals) # Aux variable for inflow min expression
+    model.u_bin = pyo.Var(range(horizon_p), segment_range, bounds=(0,1))
 
     # if init_provided_vsl is not None:
     #     for r in range(init_provided_vsl.shape[0]):
@@ -109,6 +110,8 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         # print("Warm starting solver with provided VSL speeds")
     # print(init_provided_vsl.shape)
         density, velocity, queue, flow_or, v_fd, tts = metanet_sim_params(T, l, starting_traffic_vars, init_provided_vsl, traffic_demand, downstream_density, params, real_data=False, lanes=lanes, opt=True)
+        v_fd_min = np.minimum(v_fd, init_provided_vsl)
+        v_fd_bin = np.where(v_fd < init_provided_vsl, 1, 0)
         # print(time_steps, num_segments)
         for r in range(0, time_steps):
             model.queue[r].value = queue[r, 0]
@@ -120,7 +123,8 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
                 model.velocity[r, c].value = velocity[r, c]
                 if r < horizon_p:
                     model.vsl[r, c].value = init_provided_vsl[r, c]
-                    model.v_fd[r, c].value = v_fd[r, c]
+                    model.v_fd[r, c].value = v_fd_min[r, c]
+                    model.u_bin[r, c].value = v_fd_bin[r, c]
 
 
     # print(f"Initialized value of VSL: {pyo.value(model.vsl[0, 0])}")
@@ -130,12 +134,12 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     # print(f"Provided value of density: {density[0, 0]}")
 
     # Slack variables for safety constraints
-    if safety_temporal is not None or safety_spatial is not None:
-        model.slack_spatial_1 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
-        model.slack_spatial_2 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
+    # if safety_temporal is not None or safety_spatial is not None:
+    #     model.slack_spatial_1 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
+    #     model.slack_spatial_2 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
 
-        model.slack_temporal_1 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
-        model.slack_temporal_2 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
+    #     model.slack_temporal_1 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
+    #     model.slack_temporal_2 = pyo.Var(time_horizon, segment_range, within=pyo.NonNegativeReals)
 
     # Constraints initialization
     model.constraints = pyo.ConstraintList()
@@ -150,13 +154,13 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     # For now, assume the list always starts with 0
     segment_lookup = dict()
     if control_changepoints is not None:
-        model.u_fixed = pyo.Var(time_horizon, range(len(control_changepoints)), within=pyo.NonNegativeReals)
+        # model.u_fixed = pyo.Var(time_horizon, range(len(control_changepoints)), within=pyo.NonNegativeReals)
         for i in range(len(control_changepoints)):
             start = control_changepoints[i]
             end = control_changepoints[i+1] if i+1 < len(control_changepoints) else num_segments
             for seg in range(start, end - 1):
                 # segment_lookup[seg] = i
-                for h in time_horizon:
+                for h in range(horizon_p):
                     model.constraints.add(model.vsl[h, seg] == model.vsl[h, seg+1])
             # for seg in range(start, end-1):
             #     for h in time_horizon:
@@ -174,6 +178,11 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     # for i in range(init_provided_vsl.shape[0] if init_provided_vsl is not None else 0):
     #     for m in segment_range:
     #         model.constraints.add(model.vsl[i, m] == init_provided_vsl[i, m])
+
+    # for m in segment_range:
+    #     if control_zone is not None and m not in control_zone:
+    #         for h in range(horizon_p):
+    #             model.constraints.add(model.vsl[h,m] == params['v_free'][m])
     
     for m in segment_range:
         # Initial state constraints
@@ -187,30 +196,25 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         model.constraints.add(model.queue[h] == (model.queue[h-1] + T * (traffic_demand[h-1] - model.queue_out[h-1])))
         
         for m in segment_range:
-            # If multiple segments need to be jointly controlled
-            if (safety_temporal is not None) or ((control_changepoints is not None) and (m >= control_changepoints[0])):
-                model.constraints.add(model.v_fd[h-1, m] <= v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]))
-                model.constraints.add(model.v_fd[h-1, m] <= model.vsl[h-1, m])
-            # If multiple segments need to be jointly controlled but not the first segment
-            elif (control_changepoints is not None) and (m < control_changepoints[0]):
+            if (control_zone is not None and m not in control_zone) or (control_one_segment is not None and m != control_one_segment):
                 model.constraints.add(model.v_fd[h-1, m] == v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]))
                 model.constraints.add(model.vsl[h-1, m] == v_free[m])
             # All segments are controlled independently
-            elif (control_one_segment is None) or (control_one_segment is not None and m == control_one_segment):
+            else: #or (control_one_segment is None) or (control_one_segment is not None and m == control_one_segment):
                 ## ORIGINAL FROM KIMIA PAPER
                 # model.constraints.add(model.vsl[h-1, m] <= v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]))
                 # model.constraints.add(model.v_fd[h-1, m] == model.vsl[h-1, m])
 
-                #Smooth min
-                # model.constraints.add(model.v_fd[h-1,m] == (v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m])) * model.vsl[h-1, m]) / ((v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m])) + model.vsl[h-1, m] + 0.001)
-                
+                #Big M constraint
+                M = max(v_free)
                 model.constraints.add(model.v_fd[h-1, m] <= v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]))
                 model.constraints.add(model.v_fd[h-1, m] <= model.vsl[h-1, m])
-            # No control segment on m
-            else:
-                model.constraints.add(model.v_fd[h-1, m] == v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]))
-                model.constraints.add(model.vsl[h-1, m] == v_free[m])
+                model.constraints.add(model.v_fd[h-1, m] >= v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]) - M * (1 - model.u_bin[h-1, m]))
+                model.constraints.add(model.v_fd[h-1, m] >= model.vsl[h-1, m] - M * model.u_bin[h-1, m])
+                model.constraints.add(v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]) - model.vsl[h-1, m] <= M * (1 - model.u_bin[h-1, m]))
+                model.constraints.add(model.vsl[h-1, m] - v_free[m] * pyo.exp(-(1/a[m]) * (model.density[h-1, m] / p_crit[m])**a[m]) <= M * model.u_bin[h-1, m])
 
+  
             if m == 0:
                 # Density / Velocity constraints
                 if num_segments == 1:
@@ -244,26 +248,19 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         
     # Safety constraint such that vsl for a segment cannot change more than 10 km/hr in 10 seconds
     if safety_temporal is not None:
-        for m in segment_range:
+        for m in control_zone:
             if prior_vsl is not None:
-                model.constraints.add(model.vsl[0, m] - prior_vsl[m] <= safety_temporal + model.slack_temporal_1[0, m])
-                model.constraints.add(prior_vsl[m] - model.vsl[0, m] <= safety_temporal + model.slack_temporal_2[0, m])
+                model.constraints.add(model.vsl[0, m] - prior_vsl[m] <= safety_temporal)
+                model.constraints.add(prior_vsl[m] - model.vsl[0, m] <= safety_temporal)
             for h in range(1, horizon_c):
-                model.constraints.add(model.vsl[h, m] - model.vsl[h-1, m] <= safety_temporal + model.slack_temporal_1[h, m])
-                model.constraints.add(model.vsl[h-1, m] - model.vsl[h, m] <= safety_temporal + model.slack_temporal_2[h, m])
+                model.constraints.add(model.vsl[h, m] - model.vsl[h-1, m] <= safety_temporal)
+                model.constraints.add(model.vsl[h-1, m] - model.vsl[h, m] <= safety_temporal)
 
     if safety_spatial is not None:
-        for m in range(1, num_segments):
-            for h in time_horizon:
-                model.constraints.add(model.vsl[h, m] - model.vsl[h, m-1] <= safety_spatial + model.slack_spatial_1[h, m])
-                model.constraints.add(model.vsl[h, m-1] - model.vsl[h, m] <= safety_spatial + model.slack_spatial_2[h, m])
-
-    # for h in time_horizon:
-    #     for m in segment_range:
-    #         model.constraints.add(model.slack_temporal_1[h, m] == 0)
-    #         model.constraints.add(model.slack_temporal_2[h, m] == 0)
-    #         model.constraints.add(model.slack_spatial_1[h, m] == 0)
-    #         model.constraints.add(model.slack_spatial_2[h, m] == 0)
+        for m in control_zone[1:]:
+            for h in range(0, horizon_c):
+                model.constraints.add(model.vsl[h, m] - model.vsl[h, m-1] <= safety_spatial)
+                model.constraints.add(model.vsl[h, m-1] - model.vsl[h, m] <= safety_spatial)
 
     # Define the objective function
     def objective_rule(model):
@@ -273,26 +270,33 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         return T * sum(model.density[h, m] * lanes[m] * l for h in range(1, time_steps) for m in segment_range) + T * sum(model.queue[h] for h in range(1, time_steps)) + T * sum(model.slack_temporal_1[h,m] + model.slack_temporal_2[h,m] + model.slack_spatial_1[h,m] + model.slack_spatial_2[h,m] for h in range(0, time_steps) for m in segment_range)
 
     def objective_rule_fd(model):
-        return T * sum(model.density[h, m] * lanes[m] * l for h in range(1, time_steps) for m in segment_range) + T * sum(model.queue[h] for h in range(1, time_steps)) #- T * 0.1 * sum(model.v_fd[h,m] for h in range(0, time_steps-1) for m in segment_range)
+        return T * sum(model.density[h, m] * lanes[m] * l for h in range(1, time_steps) for m in segment_range) + T * sum(model.queue[h] for h in range(1, time_steps)) + v_fd_penalty * sum(model.u_bin[h, m] * (1 - model.u_bin[h,m]) for h in range(0, time_steps-1) for m in segment_range) # - v_fd_penalty * sum(model.v_fd[h,m] for h in range(0, time_steps-1) for m in segment_range)
     #model.objective = pyo.Objective(rule=objective_rule if (safety_temporal is not None or safety_spatial is not None) else objective_rule_safety, sense=pyo.minimize)
     model.objective = pyo.Objective(rule=objective_rule_fd, sense=pyo.minimize)
     # plt.imshow(density.T, aspect='auto', interpolation='nearest')
     # print(time_steps)
-    for c in model.component_objects(Constraint, active=True):
-        print(f"Checking constraint block: {c.name}")
-        for idx in c:
-            con = c[idx]
-            body_val = value(con.body)
-            if con.lower is not None and body_val < value(con.lower) - 1e-6:
-                print(f"Violation (too low): {c.name}[{idx}] = {body_val} < {value(con.lower)}")
-                con.pprint()
-                # print("Not using initialization")
-            if con.upper is not None and body_val > value(con.upper) + 1e-6:
-                # print(queue)
-                # print(density)
-                # print(starting_traffic_vars)
-                print(f"Violation (too high): {c.name}[{idx}] = {body_val} > {value(con.upper)}")
-                con.pprint()
+
+    # CHECK IF INIT IS FEASIBLE
+    # if init_provided_vsl is not None:
+    #     c_violated = 0
+    #     for c in model.component_objects(Constraint, active=True):
+    #         for idx in c:
+    #             con = c[idx]
+    #             body_val = value(con.body)
+    #             if con.lower is not None and body_val < value(con.lower) - 1e-6:
+    #                 # print(f"Violation (too low): {c.name}[{idx}] = {body_val} < {value(con.lower)}")
+    #                 c_violated += 1
+    #                 # con.pprint()
+    #                 # print("Not using initialization")
+    #             if con.upper is not None and body_val > value(con.upper) + 1e-6:
+    #                 # print(f"Violation (too high): {c.name}[{idx}] = {body_val} > {value(con.upper)}")
+    #                 c_violated += 1
+    #                 # con.pprint()
+        
+    #     if c_violated > 0:
+    #         print(f"Warm start initialization is infeasible, {c_violated} constraints violated. Not using initialization.")
+    #     else:
+    #         print(f"Warm start initialization is feasible, using initialization.")
 
 
     # Solve the problem with IPOPT
@@ -300,25 +304,26 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     # results = solver.solve(model, solver='ipopt', strategy='midpoint_guess_and_bound', suppress_unbounded_warning=True)
     # print("Before solving obj:", pyo.value(model.objective))
     # print("Initialization TTS:", tts)
-    append_number_csv("/Users/shreyaar/Desktop/PhD/research/MPC/warmstart_obj_trends/extended_init.csv", pyo.value(model.objective))
+    # append_number_csv("/Users/shreyaar/Desktop/PhD/research/MPC/warmstart_obj_trends/extended_init.csv", pyo.value(model.objective))
 
     solver = pyo.SolverFactory('ipopt', executable='/usr/local/bin/ipopt')
 
-    solver.options['tol'] = 1e-9
+    # solver.options['tol'] = 1e-4
+    solver.options['acceptable_tol'] = 1e-3
     solver.options['warm_start_init_point'] = 'yes'
     solver.options['mu_init'] = 1e-6
     solver.options['warm_start_bound_push'] = 1e-6
     solver.options['warm_start_mult_bound_push'] = 1e-6
-    # solver.options['max_iter'] = 100000
+    # solver.options['max_iter'] = 5
     # solver.options['warm_start_init_point'] = 'yes'
 
     start_time = time.process_time()
-    status, _, iters, _, _ = ipopt_solver_wrapper.ipopt_solve_with_stats(model, solver, max_iter=10000, tee=False)
+    status, _, iters, _, _ = ipopt_solver_wrapper.ipopt_solve_with_stats(model, solver, max_iter=10000, warmstart=(init_provided_vsl is not None), tee=False)
     # result = solver.solve(model, tee=True)
     end_time = time.process_time()
 
     # print("After solving obj:", pyo.value(model.objective))
-    append_number_csv("/Users/shreyaar/Desktop/PhD/research/MPC/warmstart_obj_trends/bad_form_initialized_with_extended.csv", pyo.value(model.objective))
+    # append_number_csv("/Users/shreyaar/Desktop/PhD/research/MPC/warmstart_obj_trends/bad_form_initialized_with_extended.csv", pyo.value(model.objective))
 
     # Extract results
     density = np.array([[pyo.value(model.density[i, j]) for j in range(num_segments)] for i in range(0, time_steps)])
@@ -326,6 +331,13 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     vsl_speeds = np.array([[pyo.value(model.vsl[i, j]) for j in range(num_segments)] for i in range(0, horizon_c)])
 
     vsl_speeds_p = np.array([[pyo.value(model.vsl[i, j]) for j in range(num_segments)] for i in range(0, horizon_p)])
+    u_bin = np.array([[pyo.value(model.u_bin[i, j]) for j in range(num_segments)] for i in range(0, horizon_p)])
+
+    # Check if u_bin is binary
+    # if np.any(np.where((u_bin > 1e-5) | (u_bin < 1 - 1e-5), False, True), axis=None, out=None, keepdims=False):
+    #         print("u_bin is not all binary, some values are:", u_bin)
+    # else:
+    #     print("u_bin is all binary")
     
     # print("TTS after solving:", T * sum(density[i, j] * lanes[j] * l for i in range(0, horizon_p + 1) for j in segment_range) + T * sum(queue[i] for i in range(0, horizon_p + 1)))
     # print("TTS after simulation:", metanet_sim_params(T, l, starting_traffic_vars, vsl_speeds_p, traffic_demand, downstream_density, params, real_data=False, lanes=lanes, opt=True)[-1])
@@ -346,15 +358,6 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     #     print("Total density + queue:", T * sum(pyo.value(model.density[i, j]) * lanes[j] * l for i in range(1, time_steps) for j in segment_range) + T * sum(pyo.value(model.queue[i]) for i in range(1, time_steps)))
     #     print("Total slack variable:", T * sum(pyo.value(model.slack_spatial_1[h,m]) + pyo.value(model.slack_spatial_2[h,m]) for h in range(0, time_steps) for m in segment_range))
     #     print("--------")
-    
-    #print spatial slack
-    # if safety_spatial is not None:
-    #     spatial_slack_1 = np.array([[pyo.value(model.slack_spatial_1[i, j]) for j in range(num_segments)] for i in range(0, time_steps)])
-    #     spatial_slack_2 = np.array([[pyo.value(model.slack_spatial_2[i, j]) for j in range(num_segments)] for i in range(0, time_steps)])
-
-    #     if len(np.where(spatial_slack_1 > 1e-5)[0]) > 0 or len(np.where(spatial_slack_2 > 1e-5)[0]) > 0:
-    #         print("Spatial slack 1", spatial_slack_1)
-    #         print("Spatial slack 2", spatial_slack_2)
 
     if status.solver.termination_condition == pyo.TerminationCondition.infeasible:
         print("Infeasible")
@@ -364,13 +367,13 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
     return iters, ytime, vsl_speeds
 
 def mpc_find_vsl(total_time_steps, traffic_demand, downstream_density, lanes, T=5/3600, l=300/1000, num_segments=10, pred_horizon=20, control_horizon=20, hold_length=1, init_state=None,
-                 control_one_segment = None, initialize_vsl=None, init_fixed=None, control_changepoints=None, safety_temporal=None, safety_spatial=None, params=None, verbose=False, speed_lb=40):
+                 control_one_segment = None, initialize_vsl=None, init_fixed=None, control_changepoints=None, safety_temporal=None, safety_spatial=None, params=None, verbose=False, speed_lb=40, v_fd_penalty=0.1, control_zone=None):
     
     t = 0
     if init_state is not None:
         init_traffic_state = init_state
     else:
-        init_density = np.array([traffic_demand[0]/(90* lanes[i]) for i in range(num_segments)]) # traffic_demand[0]/90)
+        init_density = np.array([traffic_demand[0]/(lanes[0] * 90) for i in range(num_segments)]) # traffic_demand[0]/90)
         init_velocity = np.full(num_segments, 90) #90)
         init_flow_or = traffic_demand[0]
         init_queue = 0
@@ -397,7 +400,8 @@ def mpc_find_vsl(total_time_steps, traffic_demand, downstream_density, lanes, T=
                                 pred_horizon, control_horizon, init_traffic_state, lanes, 
                                 hold_len=hold_length, initialize=init_vsl_step, init_fixed=init_fixed, 
                                 control_one_segment=control_one_segment, control_changepoints=control_changepoints, 
-                                safety_temporal=safety_temporal, safety_spatial=safety_spatial, prior_vsl=prior_vsl, params=params, speed_lb=speed_lb)
+                                safety_temporal=safety_temporal, safety_spatial=safety_spatial, prior_vsl=prior_vsl, 
+                                params=params, speed_lb=speed_lb, v_fd_penalty=v_fd_penalty, control_zone=control_zone)
         # print(vsl_control)
         full_control = np.vstack((full_control, vsl_control)) if t > 0 else vsl_control
         if params is not None:
@@ -412,14 +416,15 @@ def mpc_find_vsl(total_time_steps, traffic_demand, downstream_density, lanes, T=
     if t < sim_time:
         # print(t)
         init_vsl_step = initialize_vsl[t:] if initialize_vsl is not None else None
-        print(init_vsl_step.shape)
+        # print(init_vsl_step.shape)
 
         # print(f"MPC at time step {t}")
         stime, ytime, vsl_control = mpc_opt(T, l, num_segments, traffic_demand[t:], downstream_density[t:], 
                                 total_time_steps-t, sim_time-t, init_traffic_state, lanes, 
                                 hold_len=hold_length, initialize=init_vsl_step, init_fixed=init_fixed, 
                                 control_one_segment=control_one_segment, control_changepoints=control_changepoints,
-                                safety_temporal=safety_temporal, safety_spatial=safety_spatial, prior_vsl=full_control[-1:, :][0], params=params, speed_lb=speed_lb)
+                                safety_temporal=safety_temporal, safety_spatial=safety_spatial, prior_vsl=full_control[-1:, :][0], 
+                                params=params, speed_lb=speed_lb, v_fd_penalty=v_fd_penalty, control_zone=control_zone)
         full_control = np.vstack((full_control, vsl_control))
         solve_time += ytime
         iterations += stime

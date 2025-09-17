@@ -33,7 +33,7 @@ def calculate_V_arr(rho_arr, v_ctrl_arr, a, p_crit, v_free):
 def velocity_dynamics_MN(current, prev_state, density, next_density, v_ctrl, T, l, eta_high=30, K=40, tau=18/3600, a=1.4, p_crit=37.45, v_free=120, perturbation=False):
     scaling = 0.2 if perturbation else 1
     next =  current + T/tau * (calculate_V(density, v_ctrl, a, p_crit, v_free) * scaling - current) + T/l * current * (prev_state - current) - (eta_high * T) / (tau * l) * (next_density - density) / (density + K)
-    return max(0, next) #if current_density == 0 else min(max(0, next), q_capacity/current_density)
+    return min(max(0, next), v_free) #if current_density == 0 else min(max(0, next), q_capacity/current_density)
 
 def origin_flow_dynamics_MN(demand, density_first, queue, lanes, T, p_max=180, p_crit=37.45, q_capacity=2200):
     return min(demand + queue / T, lanes * q_capacity * (p_max - density_first)/(p_max - p_crit), lanes * q_capacity)

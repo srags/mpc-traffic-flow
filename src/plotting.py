@@ -59,7 +59,7 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
     time_steps, num_segm = vsl_control.shape
     print(time_steps, num_segm)
 
-    start_state =  (np.full(num_segm, 0), np.full(num_segm, 0), traffic_demand[0], 0)
+    start_state = (np.full(num_segm, traffic_demand[0]/(lane_map[0] * 90)), np.full(num_segm, 90), traffic_demand[0], 0)
     
     if params is not None:
         p_nocontrol, v_nocontrol, queue_nocontrol, tts_nocontrol= metanet_sim_params(T, l, start_state, np.full((time_steps, num_segm), v_free), traffic_demand, downstream_density, params, real_data=False, plotting=True, lanes=lane_map)
