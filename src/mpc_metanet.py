@@ -44,6 +44,8 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         K = [40 for i in range(num_segments)]
         tau = [18/3600 for i in range(num_segments)]
         eta_high = [30 for i in range(num_segments)]
+        r = [0 for i in range(num_segments)]
+        beta = [0 for i in range(num_segments)]
         p_max = 180
     else:
         v_free = params['v_free']
@@ -53,6 +55,8 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         K = params['K']
         tau = params['tau']
         eta_high = params['eta_high']
+        r = params['r']
+        beta = params['beta']
         p_max = 180
 
     initial_density, initial_velocity, initial_flow_or, initial_queue = starting_traffic_vars
@@ -91,7 +95,7 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
 
     model.vsl = pyo.Var(range(horizon_p), segment_range, bounds=(speed_lb,max(v_free)), within=pyo.NonNegativeReals)
     model.density = pyo.Var(time_horizon, segment_range, bounds=(1e-20,p_max), within=pyo.NonNegativeReals)
-    model.velocity = pyo.Var(time_horizon, segment_range, bounds=(0, max(v_free)+30), within=pyo.NonNegativeReals)
+    model.velocity = pyo.Var(time_horizon, segment_range, bounds=(1e-4, max(v_free)+30), within=pyo.NonNegativeReals)
 
     model.queue = pyo.Var(time_horizon, bounds=(-1e-6, 10000))
     model.v_fd = pyo.Var(range(horizon_p), segment_range, bounds=(0, max(v_free)), within=pyo.NonNegativeReals)
@@ -218,25 +222,25 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
             if m == 0:
                 # Density / Velocity constraints
                 if num_segments == 1:
-                    model.constraints.add(model.density[h, m] == model.density[h-1, m] + T/(l * lanes[m]) * (model.queue_out[h-1]  - model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
+                    model.constraints.add(model.density[h, m] == model.density[h-1, m] + T/(l * lanes[m]) * (model.queue_out[h-1] + r[m] - (1 + beta[m]) * model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
                     model.constraints.add(model.velocity[h, m] == model.velocity[h-1, m] + (T / tau[m]) * (model.v_fd[h-1, m] - model.velocity[h-1, m]) 
                                             - (eta_high[m] * T / (tau[m] * l)) * ((downstream_density[h-1] - model.density[h-1, m]) / (model.density[h-1, m] + K[m])))
                 else:
-                    model.constraints.add(model.density[h, m] == model.density[h-1, m] + T/(l * lanes[m]) * (model.queue_out[h-1]  - model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
+                    model.constraints.add(model.density[h, m] == model.density[h-1, m] + T/(l * lanes[m]) * (model.queue_out[h-1] + r[m] - (1 + beta[m]) * model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
                     model.constraints.add(model.velocity[h, m] == model.velocity[h-1, m] + (T / tau[m]) * (model.v_fd[h-1, m] - model.velocity[h-1, m]) 
                                             - (eta_high[m] * T / (tau[m] * l)) * ((model.density[h-1, m+1] - model.density[h-1, m]) / (model.density[h-1, m] + K[m])))
                 
             elif m == num_segments - 1:
                 # Density / Velocity constraints
                 model.constraints.add(model.density[h, m] == model.density[h-1, m] 
-                                        + T/(l * lanes[m]) * (model.density[h-1, m-1] * model.velocity[h-1, m-1] * lanes[m-1] - model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
+                                        + T/(l * lanes[m]) * (model.density[h-1, m-1] * model.velocity[h-1, m-1] * lanes[m-1] + r[m] - (1 + beta[m]) * model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
                 model.constraints.add(model.velocity[h, m] == model.velocity[h-1, m] + (T / tau[m]) * (model.v_fd[h-1, m] - model.velocity[h-1, m]) 
                                         + (T/l) * model.velocity[h-1, m]* (model.velocity[h-1, m-1] - model.velocity[h-1, m])
                                         - (eta_high[m] * T / (tau[m] * l)) * ((downstream_density[h-1] - model.density[h-1, m]) / (model.density[h-1, m] + K[m])))
             else:
                 # Density / Velocity constraints
                 model.constraints.add(model.density[h, m] == model.density[h-1, m] 
-                                        + T/(l * lanes[m]) * (model.density[h-1, m-1] * model.velocity[h-1, m-1] * lanes[m-1]  - model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
+                                        + T/(l * lanes[m]) * (model.density[h-1, m-1] * model.velocity[h-1, m-1] * lanes[m-1]  + r[m] - (1 + beta[m]) * model.density[h-1, m] * model.velocity[h-1, m] * lanes[m]))
                 model.constraints.add(model.velocity[h, m] == model.velocity[h-1, m] + (T / tau[m]) * (model.v_fd[h-1, m] - model.velocity[h-1, m]) 
                                         + (T/l) * model.velocity[h-1, m] * (model.velocity[h-1, m-1] - model.velocity[h-1, m])
                                         - (eta_high[m] * T / (tau[m] * l)) * ((model.density[h-1, m+1] - model.density[h-1, m]) / (model.density[h-1, m] + K[m])))
@@ -248,7 +252,7 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
         
     # Safety constraint such that vsl for a segment cannot change more than 10 km/hr in 10 seconds
     if safety_temporal is not None:
-        for m in control_zone:
+        for m in (control_zone if control_zone is not None else segment_range):
             if prior_vsl is not None:
                 model.constraints.add(model.vsl[0, m] - prior_vsl[m] <= safety_temporal)
                 model.constraints.add(prior_vsl[m] - model.vsl[0, m] <= safety_temporal)
@@ -257,7 +261,7 @@ def mpc_opt(T, l, num_segments, traffic_demand, downstream_density, horizon_p, h
                 model.constraints.add(model.vsl[h-1, m] - model.vsl[h, m] <= safety_temporal)
 
     if safety_spatial is not None:
-        for m in control_zone[1:]:
+        for m in (control_zone[1:] if control_zone is not None else segment_range[1:]):
             for h in range(0, horizon_c):
                 model.constraints.add(model.vsl[h, m] - model.vsl[h, m-1] <= safety_spatial)
                 model.constraints.add(model.vsl[h, m-1] - model.vsl[h, m] <= safety_spatial)

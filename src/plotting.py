@@ -9,7 +9,7 @@ def plot_vsls(vsl_matrix, time_steps, num_segm, v_free, T=10/3600, l=0.5):
     '''
     # Plot the optimal vsl matrix in a heatmap
     plt.figure(figsize=(15, 5))
-    plt.imshow(vsl_matrix.T, cmap='RdBu', interpolation='nearest', aspect='auto', vmax=v_free, vmin=0)
+    plt.imshow(vsl_matrix.T, cmap='viridis', interpolation='nearest', aspect='auto', vmax=v_free, vmin=0)
     # Scale y axis labels by 3/10
     plt.yticks(np.arange(0, num_segm, 2), np.round(np.arange(0, num_segm*l, 2*l), 2), fontsize=14)
     # Scale x axis labels by 1/6

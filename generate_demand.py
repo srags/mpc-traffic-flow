@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib as mpl
 import os
 from itertools import product
 from src.traffic_sim import metanet_sim_params
@@ -186,9 +187,9 @@ if __name__ == "__main__":
 
     sim_lanes = {i: 4 if i < num_segments-5 else 2 for i in range(num_segments)}
     params = DefaultParams(num_segments).get_params()
-    num_scenarios = 10 * 2 + 1
+    num_scenarios = 14 * 2 + 1
     p_min = 5100
-    p_max = 6100
+    p_max = 6500
     durations = [0.5]
 
 
@@ -202,6 +203,7 @@ if __name__ == "__main__":
     opt_delay = opt_tts - ff_tt
     percent_improvement = np.round((delay - opt_delay) / delay * 100, 1)
     print(percent_improvement)
+    print(avg_speed)
 
     # for k in demand_options.keys():
     #     print(f"Peak demand: {k[0]}, Duration: {k[1]}, Controllable Congestion: {percent_improvement[k]}%")
@@ -238,12 +240,18 @@ if __name__ == "__main__":
 
     # ax2.cla()
     # plt.xlabel('Average Travel Time without Control (min)', fontname='Times New Roman', fontsize=18)
+    mpl.rc('font',family='Times New Roman')
     ax.set_xlabel('Demand During 30 min Peak Period (veh/hr)', fontname='Times New Roman', fontsize=18)
     ax.set_xlim(p_min-10, p_max+10)
 
-    ax.plot(peak_demand, percent_improvement.reshape(-1), color='blue', marker='o')
-    ax.set_ylabel('Controllable Congestion (%)', fontname='Times New Roman', fontsize=18, fontweight='bold')
-    ax.yaxis.label.set_color('blue')
+    ## Controllable congestion
+
+    # ax.plot(peak_demand, percent_improvement.reshape(-1), color='blue', marker='o')
+    # ax.set_ylabel('Controllable Congestion (%)', fontname='Times New Roman', fontsize=18, fontweight='bold')
+    # ax.yaxis.label.set_color('blue')
+    # ax.set_ylim(0, np.max(percent_improvement)*1.1)
+
+    ### Opportunity gap plot
 
     los_thresholds = {'B':59, 'C':54, 'D':46, 'E':30, 'F':0}
     los_tracker = 'B'
@@ -255,47 +263,48 @@ if __name__ == "__main__":
 
     for i in range(len(demand_threshold)):
         if i == len(demand_threshold) - 1:
-            ax.axvline(demand_threshold[i], color='C'+str(i+1), linestyle='--', alpha=0.5, label=f'LOS {chr(ord("A")+i + 1)} Threshold')
+            ax.axvline(demand_threshold[i], color='C'+str(i+1), linestyle='--', alpha=0.5)
             ax.axvline(p_max+10, color='C'+str(i+1), linestyle='--', alpha=0.5)
-            span = ax.axvspan(demand_threshold[i], p_max+10, alpha=0.1, label=f'LOS {chr(ord("A")+i + 1)}', color='C'+str(i+1))
+            span = ax.axvspan(demand_threshold[i], p_max+10, alpha=0.1, color='C'+str(i+1))
             # Annotate the shaded region
             ax.annotate(f'LOS {chr(ord("A")+i + 1)}', 
                         xy=((demand_threshold[i]+p_max)/2, ax.get_ylim()[1]-2), 
-                        xycoords='data', ha='center', va='bottom', fontsize=14, color='C'+str(i+1), fontweight='bold')
+                        xycoords='data', ha='center', va='bottom', fontsize=18, color='C'+str(i+1), fontweight='bold', fontname='Times New Roman')
         else:
             if i == 0:
-                ax.axvspan(p_min-10, demand_threshold[i+1], alpha=0.1, label=f'LOS {chr(ord("A")+i + 1)}', color='C'+str(i+1))
+                ax.axvspan(p_min-10, demand_threshold[i+1], alpha=0.1, color='C'+str(i+1))
             else:
-                ax.axvspan(demand_threshold[i], demand_threshold[i+1], alpha=0.1, label=f'LOS {chr(ord("A")+i + 1)}', color='C'+str(i+1))
+                ax.axvspan(demand_threshold[i], demand_threshold[i+1], alpha=0.1, color='C'+str(i+1))
                 ax.axvline(demand_threshold[i], color='C'+str(i+1), linestyle='--', alpha=0.5)
 
             # Annotate the shaded region
             ax.annotate(f'LOS {chr(ord("A")+i + 1)}', 
                         xy=((demand_threshold[i]+demand_threshold[i+1])/2, ax.get_ylim()[1]-2), 
-                        xycoords='data', ha='center', va='bottom', fontsize=14, color='C'+str(i+1), fontweight='bold')
-    
-    #Increase size of ticks
+                        xycoords='data', ha='center', va='bottom', fontsize=18, color='C'+str(i+1), fontweight='bold', fontname='Times New Roman')
     
 
-    # for i, txt in enumerate(peak_demand):
-    #     if i% 5 == 0:
-    #         ax.annotate(int(txt), (avg_tt[i], percent_improvement[i]), xytext=(avg_tt[i], percent_improvement[i]+1), fontname='Times New Roman')
 
-    
-    #Add another axis on top that is peak_demand instead of percent improvement
-    # ax2 = ax.twiny()
-    # print(peak_demand)
-    # create another y axis on the right for average speed
-    ax2 = ax.twinx()
-    ax2.set_ylabel('Average Speed (mph)', fontname='Times New Roman', fontsize=18, fontweight='bold')
-    ax2.tick_params(labelsize=14)
-    ax2.set_ylim(30, 60)
-    ax2.plot(peak_demand, avg_speed.reshape(-1), color='purple', marker='o')
-    ax2.yaxis.label.set_color('purple')
+    ax.plot(peak_demand, delay.reshape(-1), color='red', marker='o', label='No Control')
+    ax.plot(peak_demand, opt_delay.reshape(-1), color='green', marker='o', label='With VSL Control')
+    #Shade area between two curves
+    ax.fill_between(peak_demand, delay.reshape(-1), opt_delay.reshape(-1), color='gray', alpha=0.3)
+    ax.set_ylabel('Total delay (veh-hr)', fontname='Times New Roman', fontsize=18)
+    ax.set_ylim(0, np.max(delay)*1.1)
+
+    ## Average speed
+
+    # ax2 = ax.twinx()
+    # ax2.set_ylabel('Average Speed (mph)', fontname='Times New Roman', fontsize=18, fontweight='bold')
+    # ax2.tick_params(labelsize=14)
+    # ax2.set_ylim(30, 60)
+    # ax2.plot(peak_demand, avg_speed.reshape(-1), color='purple', marker='o')
+    # ax2.yaxis.label.set_color('purple')
+
 
     ax.tick_params(labelsize=14)
     # move legend outside the plot
     # plt.legend( loc='upper left')
+    plt.legend(loc='upper left', fontsize=14)
     plt.grid()
     plt.show()
 
