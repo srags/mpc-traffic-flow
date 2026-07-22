@@ -1,0 +1,9 @@
+old_code/
+src/sim_params/
+data/i35w/
+vsl_results/i35w/
+figs/i35w/
+
+**/.DS_Store
+__pycache__/
+**/__pycache__/
