@@ -1,5 +1,5 @@
 {
-    "hold_length": 3,
+    "hold_length": 9,
     "control_changepoints": null,
     "safety_temporal": null,
     "safety_spatial": null,
@@ -21,7 +21,7 @@
     ],
     "control_one_segment": null,
     "initialize_vsl": null,
-    "init_fixed": 50,
+    "init_fixed": null,
     "tee": false,
     "pred_horizon": 40,
     "control_horizon": 9

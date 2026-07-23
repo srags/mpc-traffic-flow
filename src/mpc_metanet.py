@@ -107,7 +107,11 @@ def mpc_opt(
             pad = np.ones((horizon_p + 1 - initialize.shape[0], num_segments)) * min(v_free)
             init_vsl = np.vstack((initialize, pad))
     elif init_fixed is not None:
-        init_vsl = np.full((horizon_p + 1, num_segments), init_fixed)
+        if init_fixed == "adaptive":
+            init_fixed_value = float(np.mean(initial_velocity))
+        else:
+            init_fixed_value = init_fixed
+        init_vsl = np.full((horizon_p + 1, num_segments), init_fixed_value)
     else:
         init_vsl = None
 
@@ -197,7 +201,7 @@ def mpc_opt(
             (control_one_segment is not None and m != control_one_segment)
         )
         if not uncontrolled:
-            for i in range(0, horizon_c, hold_len):
+            for i in range(0, horizon_p, hold_len):
                 # con.add(model.vsl[i, m] == 150)
                 for j in range(hold_len - 1):
                     if i + j + 1 < horizon_p:
@@ -257,7 +261,7 @@ def mpc_opt(
         term2 = traffic_demand[h] + model.queue[h] / T
         term3 = _get_time_space_param(q_cap, h, 0) * lanes[0]
 
-        eps_merge = 0.5
+        eps_merge = 1e-4
         min12 = 0.5 * (term1 + term2 - pyo.sqrt((term1 - term2)**2 + eps_merge))
         smooth_qout = 0.5 * (min12 + term3 - pyo.sqrt((min12 - term3)**2 + eps_merge))
 
@@ -297,7 +301,7 @@ def mpc_opt(
 
                 # con.add(model.vsl[h-1, m] <= v_free[m])
                 
-                eps = 0.5  # smoothing parameter, tune between 1e-3 and 1.0
+                eps = 1e-4  # smoothing parameter, tune between 1e-3 and 1.0
                 diff = v_ff - model.vsl[h - 1, m]
                 smooth_min = 0.5 * (v_ff + model.vsl[h - 1, m] - pyo.sqrt(diff**2 + eps))
                 con.add(model.v_fd[h - 1, m] == smooth_min)
@@ -353,8 +357,6 @@ def mpc_opt(
         sense=pyo.minimize,
     )
 
-    # after building `model` in mpc_opt, BEFORE calling the solver:
-
     # # 1. VSL array matching exactly what the model permits
     # vsl_chk = np.full((horizon_p, num_segments), 150.0)
     # for m in seg_range:
@@ -404,9 +406,9 @@ def mpc_opt(
 
     if init_vsl is not None:
         solver.options['warm_start_init_point'] = 'yes'
-        solver.options['mu_init'] = 1e-2          # was 1e-6 — give the barrier room to work
-        solver.options['warm_start_bound_push'] = 1e-4
-        solver.options['warm_start_mult_bound_push'] = 1e-4
+        solver.options['mu_init'] = 0.1   # IPOPT default, instead of 1e-2
+        solver.options['warm_start_bound_push'] = 1e-2
+        solver.options['warm_start_mult_bound_push'] = 1e-2
 
         # solver.options['warm_start_init_point']      = 'yes'
         # solver.options['mu_init']                    = 1e-6
@@ -418,7 +420,7 @@ def mpc_opt(
     t0 = time.process_time()
     status, _, iters, _, _ = ipopt_solver_wrapper.ipopt_solve_with_stats(
         model, solver,
-        max_iter=1_000_000, max_cpu_time=1e20,
+        max_iter=10000, max_cpu_time=90,
         warmstart=(init_vsl is not None), tee=tee,
     )
     solve_time = time.process_time() - t0
@@ -426,12 +428,13 @@ def mpc_opt(
     # logging.basicConfig(level=logging.INFO)
     # log_infeasible_constraints(model, log_expression=True, log_variables=True, tol=1e-6)
 
-    if status.solver.termination_condition == pyo.TerminationCondition.infeasible:
+    if status.solver.termination_condition != pyo.TerminationCondition.optimal:
         raise ValueError(
-            f"Solver found problem infeasible.\n"
-            f"  downstream_density={downstream_density}\n"
-            f"  traffic_demand={traffic_demand}\n"
-            f"  starting_vars={starting_traffic_vars}"
+            f"Solver did not converge (termination condition: "
+            f"{status.solver.termination_condition}).\n"
+            # f"  downstream_density={downstream_density}\n"
+            # f"  traffic_demand={traffic_demand}\n"
+            # f"  starting_vars={starting_traffic_vars}"
         )
 
     vsl_speeds_c = np.array([[pyo.value(model.vsl[h, m]) for m in seg_range]
@@ -515,12 +518,21 @@ def mpc_find_vsl(
                             p_h, c_h, cur_state, lanes, **kwargs)
 
         except ValueError as exc:
-            print(f"[MPC t={t_start}] Solver failed: {exc}\n  Retrying without warm-start.")
-            kwargs.update(initialize=None, init_fixed=None)
-            return mpc_opt(T, l, num_segments,
-                           traffic_demand[t_start: t_start + p_h + 1],
-                           downstream_density[t_start: t_start + p_h + 1],
-                           p_h, c_h, cur_state, lanes, **kwargs)
+            print(f"[MPC t={t_start}] Solver failed: {exc}\n  Retrying with init_fixed warm-start.")
+            kwargs.update(initialize=None)
+            try:
+                return mpc_opt(T, l, num_segments,
+                               traffic_demand[t_start: t_start + p_h + 1],
+                               downstream_density[t_start: t_start + p_h + 1],
+                               p_h, c_h, cur_state, lanes, **kwargs)
+
+            except ValueError as exc2:
+                print(f"[MPC t={t_start}] Solver failed again: {exc2}\n  Retrying fully cold (no warm-start).")
+                kwargs.update(init_fixed=None)
+                return mpc_opt(T, l, num_segments,
+                               traffic_demand[t_start: t_start + p_h + 1],
+                               downstream_density[t_start: t_start + p_h + 1],
+                               p_h, c_h, cur_state, lanes, **kwargs)
 
     prev_full_solution = None
 
