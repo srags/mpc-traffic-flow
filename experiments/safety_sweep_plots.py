@@ -81,23 +81,34 @@ def load_sweep_results(
     return results
 
 
-def _tts_value(entry, tts_baseline):
-    value = entry["tts"]
-    if tts_baseline is not None:
-        value = 100.0 * (tts_baseline - value) / tts_baseline
-    return value
+def _cc_value(entry, tts_baseline, ff_ttt):
+    """Controllable congestion (%): the fraction of the *baseline delay*
+    (TTS above free-flow travel time) eliminated by control — matches the
+    `cc = (delay_baseline - opt_delay) / delay_baseline * 100` calculation in
+    I_24_constraint_plotting.py, NOT a raw TTS-reduction percentage (delay is
+    always <= TTS, so dividing by TTS instead of delay understates the effect).
+    Falls back to raw TTS if tts_baseline/ff_ttt aren't both given.
+    """
+    if tts_baseline is not None and ff_ttt is not None:
+        delay_baseline = tts_baseline - ff_ttt
+        opt_delay = entry["tts"] - ff_ttt
+        return 100.0 * (delay_baseline - opt_delay) / delay_baseline
+    return entry["tts"]
 
 
-def _tts_label(tts_baseline):
-    return "% TTS improvement vs. no control" if tts_baseline is not None else "TTS (veh-hr)"
+def _cc_label(tts_baseline, ff_ttt):
+    if tts_baseline is not None and ff_ttt is not None:
+        return "Controllable congestion (%)"
+    return "TTS (veh-hr)"
 
 
 def plot_tts_heatmap(
     results, safety_temporal_values, safety_spatial_values,
-    tts_baseline=None, ax=None,
+    tts_baseline=None, ff_ttt=None, ax=None,
 ):
-    """Option 1: 2D heatmap of TTS (or % improvement over tts_baseline) across the
-    safety_temporal x safety_spatial grid. Missing combinations are left blank.
+    """Option 1: 2D heatmap of controllable congestion (%) — or raw TTS if
+    tts_baseline/ff_ttt aren't given — across the safety_temporal x
+    safety_spatial grid. Missing combinations are left blank.
     """
     grid = np.full((len(safety_temporal_values), len(safety_spatial_values)), np.nan)
     for i, st in enumerate(safety_temporal_values):
@@ -105,7 +116,7 @@ def plot_tts_heatmap(
             entry = results.get((st, ss))
             if entry is None:
                 continue
-            grid[i, j] = _tts_value(entry, tts_baseline)
+            grid[i, j] = _cc_value(entry, tts_baseline, ff_ttt)
 
     if ax is None:
         _, ax = plt.subplots(figsize=(7, 6))
@@ -122,7 +133,7 @@ def plot_tts_heatmap(
     ax.set_xlabel("safety_spatial")
     ax.set_ylabel("safety_temporal")
 
-    label = _tts_label(tts_baseline)
+    label = _cc_label(tts_baseline, ff_ttt)
     ax.set_title(label)
     cbar = plt.colorbar(im, ax=ax)
     cbar.set_label(label)
@@ -141,11 +152,12 @@ def plot_tts_heatmap(
 
 def plot_tts_lines(
     results, safety_temporal_values, safety_spatial_values,
-    tts_baseline=None, vary="safety_temporal", ax=None,
+    tts_baseline=None, ff_ttt=None, vary="safety_temporal", ax=None,
 ):
-    """Option 2: line plot of TTS (or % improvement) vs. one swept parameter, with
-    one line per value of the other parameter. Missing points become gaps
-    (NaN) in the line rather than raising an error.
+    """Option 2: line plot of controllable congestion (%) — or raw TTS if
+    tts_baseline/ff_ttt aren't given — vs. one swept parameter, with one line
+    per value of the other parameter. Missing points become gaps (NaN) in the
+    line rather than raising an error.
     """
     if vary == "safety_temporal":
         x_values, series_values = safety_temporal_values, safety_spatial_values
@@ -165,11 +177,11 @@ def plot_tts_lines(
         y = []
         for x in x_values:
             entry = get_entry(x, s)
-            y.append(np.nan if entry is None else _tts_value(entry, tts_baseline))
+            y.append(np.nan if entry is None else _cc_value(entry, tts_baseline, ff_ttt))
         ax.plot(x_values, y, marker="o", label=f"{series_label}={s}")
 
     ax.set_xlabel(xlabel)
-    ax.set_ylabel(_tts_label(tts_baseline))
+    ax.set_ylabel(_cc_label(tts_baseline, ff_ttt))
     ax.legend(title=series_label)
     ax.grid(alpha=0.3)
     plt.tight_layout()
@@ -178,11 +190,12 @@ def plot_tts_lines(
 
 def plot_tts_vs_smoothness(
     results, safety_temporal_values, safety_spatial_values,
-    tts_baseline=None, metric="combined", annotate=True, ax=None,
+    tts_baseline=None, ff_ttt=None, metric="combined", annotate=True, ax=None,
 ):
-    """Option 3: scatter of TTS (or % improvement) vs. a VSL "roughness" metric
-    derived from the saved trajectories themselves (mean |delta VSL| across
-    time and/or segments), regardless of which safety_temporal/safety_spatial
+    """Option 3: scatter of controllable congestion (%) — or raw TTS if
+    tts_baseline/ff_ttt aren't given — vs. a VSL "roughness" metric derived
+    from the saved trajectories themselves (mean |delta VSL| across time
+    and/or segments), regardless of which safety_temporal/safety_spatial
     combination produced it — visualizes the smoothness/performance trade-off
     directly rather than per-parameter.
     """
@@ -205,7 +218,7 @@ def plot_tts_vs_smoothness(
                 raise ValueError("metric must be 'temporal', 'spatial', or 'combined'")
 
             xs.append(x)
-            ys.append(_tts_value(entry, tts_baseline))
+            ys.append(_cc_value(entry, tts_baseline, ff_ttt))
             labels.append(f"({st},{ss})")
 
     ax.scatter(xs, ys)
@@ -214,7 +227,7 @@ def plot_tts_vs_smoothness(
             ax.annotate(label, (x, y), fontsize=8, xytext=(4, 4), textcoords="offset points")
 
     ax.set_xlabel(f"VSL roughness ({metric})")
-    ax.set_ylabel(_tts_label(tts_baseline))
+    ax.set_ylabel(_cc_label(tts_baseline, ff_ttt))
     ax.grid(alpha=0.3)
     plt.tight_layout()
     return ax

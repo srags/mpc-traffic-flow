@@ -61,7 +61,7 @@ constraint = "hold_length" # speed_lb
 vsl_dir = f"/Users/shreyaar/Desktop/PhD/research/MPC/results/i24/{date}/{calibration_id}/{constraint}"  # ADAPT
 
 # Sweep values -- ADAPT to whatever speed_lb values you've actually run
-constraint_values = [1, 2, 3, 4, 5, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39]
+constraint_values = [1, 2, 3, 4, 5, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60]
 
 save_name = "/Users/shreyaar/Desktop/PhD/research/MPC/figs/i24_hold_len.png"
 
