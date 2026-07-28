@@ -442,7 +442,7 @@ def mpc_opt(
     t0 = time.process_time()
     status, _, iters, _, _ = ipopt_solver_wrapper.ipopt_solve_with_stats(
         model, solver,
-        max_iter=10000, max_cpu_time=90,
+        max_iter=40000, max_cpu_time=180,
         warmstart=(init_vsl is not None), tee=tee,
     )
     solve_time = time.process_time() - t0
@@ -524,102 +524,117 @@ def mpc_find_vsl(
     solve_time   = 0.0
     iterations   = 0
 
+    # init_fixed may be a single value/"adaptive" (kept for backward compatibility)
+    # or a list of fallback constants to cycle through in order.
+    if init_fixed is None:
+        init_fixed_list = []
+    elif isinstance(init_fixed, (list, tuple)):
+        init_fixed_list = list(init_fixed)
+    else:
+        init_fixed_list = [init_fixed]
+
     def _solve(t_start, p_h, c_h, cur_state, init_slice, sliced_params):
         prior = full_control[-1] if (full_control is not None and full_control.ndim == 2) else None
-        kwargs = dict(
-            hold_len=hold_length, initialize=init_slice, init_fixed=init_fixed,
-            control_one_segment=control_one_segment, control_changepoints=control_changepoints,
+        base_kwargs = dict(
+            hold_len=hold_length, control_one_segment=control_one_segment,
+            control_changepoints=control_changepoints,
             safety_temporal=safety_temporal, safety_spatial=safety_spatial,
             prior_vsl=prior, params=sliced_params,
             speed_lb=speed_lb, v_fd_penalty=v_fd_penalty, control_zone=control_zone, tee=tee
         )
-        try:
-            return mpc_opt(T, l, num_segments,
-                            traffic_demand[t_start: t_start + p_h + 1],
-                            downstream_density[t_start: t_start + p_h + 1],
-                            p_h, c_h, cur_state, lanes, **kwargs)
 
-        except ValueError as exc:
-            print(f"[MPC t={t_start}] Solver failed: {exc}\n  Retrying with init_fixed warm-start.")
-            kwargs.update(initialize=None)
+        # Attempt order: provided/shifted solution (if any) -> each init_fixed
+        # value in turn -> fully cold. Stops at the first attempt that succeeds.
+        attempts = []
+        if init_slice is not None:
+            attempts.append(("provided/shifted solution", dict(initialize=init_slice, init_fixed=None)))
+        for value in init_fixed_list:
+            attempts.append((f"init_fixed={value}", dict(initialize=None, init_fixed=value)))
+        attempts.append(("fully cold", dict(initialize=None, init_fixed=None)))
+
+        last_exc = None
+        for i, (label, overrides) in enumerate(attempts):
             try:
                 return mpc_opt(T, l, num_segments,
-                               traffic_demand[t_start: t_start + p_h + 1],
-                               downstream_density[t_start: t_start + p_h + 1],
-                               p_h, c_h, cur_state, lanes, **kwargs)
-
-            except ValueError as exc2:
-                print(f"[MPC t={t_start}] Solver failed again: {exc2}\n  Retrying fully cold (no warm-start).")
-                kwargs.update(init_fixed=None)
-                return mpc_opt(T, l, num_segments,
-                               traffic_demand[t_start: t_start + p_h + 1],
-                               downstream_density[t_start: t_start + p_h + 1],
-                               p_h, c_h, cur_state, lanes, **kwargs)
+                                traffic_demand[t_start: t_start + p_h + 1],
+                                downstream_density[t_start: t_start + p_h + 1],
+                                p_h, c_h, cur_state, lanes, **base_kwargs, **overrides)
+            except ValueError as exc:
+                last_exc = exc
+                if i < len(attempts) - 1:
+                    print(f"[MPC t={t_start}] Attempt '{label}' failed: {exc}\n  Trying next fallback.")
+        raise last_exc
 
     prev_full_solution = None
 
-    while t + pred_horizon <= sim_time:
-        if verbose and t % control_horizon == 0:
-            print(f"[MPC] t = {t}")
+    try:
+        while t + pred_horizon <= sim_time:
+            if verbose and t % control_horizon == 0:
+                print(f"[MPC] t = {t}")
 
-        params_mpc = param_slice(params, t, t+pred_horizon, sim_time, desired_length=pred_horizon)
+            params_mpc = param_slice(params, t, t+pred_horizon, sim_time, desired_length=pred_horizon)
 
-        # During warm-up, apply free-flow VSL and advance state without solving
-        if t < warmup_time:
-            vsl_ctrl = np.full((control_horizon, num_segments), 150.0)
+            # During warm-up, apply free-flow VSL and advance state without solving
+            if t < warmup_time:
+                vsl_ctrl = np.full((control_horizon, num_segments), 150.0)
+                full_control = np.vstack((full_control, vsl_ctrl)) if full_control is not None else vsl_ctrl
+                state = run_metanet_sim(
+                    T, l, state,
+                    traffic_demand[t: t + control_horizon + 1],
+                    downstream_density[t: t + control_horizon],
+                    params_mpc, vsl_speeds=vsl_ctrl, lanes=lanes, real_data=False,
+                )[0]
+                t += control_horizon
+                continue
+
+            # ------------------------------------------------------------------
+            # Warm-start priority:
+            #   1. user-provided initialize_vsl (explicit initialization wins)
+            #   2. previous MPC step's solution, shifted by control_horizon
+            #   3. None (falls through to init_fixed / cold start inside mpc_opt)
+            # ------------------------------------------------------------------
+            if initialize_vsl is not None:
+                init_slice = initialize_vsl[t: t + pred_horizon + 1]
+            elif prev_full_solution is not None:
+                # Drop the first control_horizon rows (already executed),
+                # pad the end with the last row repeated
+                shifted = prev_full_solution[control_horizon:]
+                pad = np.tile(shifted[-1], (pred_horizon + 1 - shifted.shape[0], 1))
+                init_slice = np.vstack((shifted, pad))
+            else:
+                init_slice = None
+
+            n_iters, ytime, vsl_ctrl, vsl_full = _solve(t, pred_horizon, control_horizon, state, init_slice, params_mpc)
+            prev_full_solution = vsl_full.copy()   # save for next iteration
             full_control = np.vstack((full_control, vsl_ctrl)) if full_control is not None else vsl_ctrl
+
             state = run_metanet_sim(
                 T, l, state,
                 traffic_demand[t: t + control_horizon + 1],
                 downstream_density[t: t + control_horizon],
                 params_mpc, vsl_speeds=vsl_ctrl, lanes=lanes, real_data=False,
             )[0]
-            t += control_horizon
-            continue
 
-        # ------------------------------------------------------------------
-        # Warm-start priority:
-        #   1. user-provided initialize_vsl (explicit initialization wins)
-        #   2. previous MPC step's solution, shifted by control_horizon
-        #   3. None (falls through to init_fixed / cold start inside mpc_opt)
-        # ------------------------------------------------------------------
-        if initialize_vsl is not None:
-            init_slice = initialize_vsl[t: t + pred_horizon + 1]
-        elif prev_full_solution is not None:
-            # Drop the first control_horizon rows (already executed),
-            # pad the end with the last row repeated
-            shifted = prev_full_solution[control_horizon:]
-            pad = np.tile(shifted[-1], (pred_horizon + 1 - shifted.shape[0], 1))
-            init_slice = np.vstack((shifted, pad))
-        else:
-            init_slice = None
+            t          += control_horizon
+            solve_time += ytime
+            iterations += n_iters
 
-        n_iters, ytime, vsl_ctrl, vsl_full = _solve(t, pred_horizon, control_horizon, state, init_slice, params_mpc)
-        prev_full_solution = vsl_full.copy()   # save for next iteration
-        full_control = np.vstack((full_control, vsl_ctrl)) if full_control is not None else vsl_ctrl
+        # Tail step
+        if t < sim_time:
+            print(t)
+            print(sim_time-t)
+            params_mpc = param_slice(params, t, sim_time, sim_time, desired_length=pred_horizon+1)
+            init_slice = initialize_vsl[t:] if initialize_vsl is not None else None
 
-        state = run_metanet_sim(
-            T, l, state,
-            traffic_demand[t: t + control_horizon + 1],
-            downstream_density[t: t + control_horizon],
-            params_mpc, vsl_speeds=vsl_ctrl, lanes=lanes, real_data=False,
-        )[0]
+            n_iters, ytime, vsl_ctrl, vsl_full = _solve(t, sim_time - t, sim_time - t, state, init_slice, params_mpc)
+            full_control = np.vstack((full_control, vsl_ctrl))
+            solve_time  += ytime
+            iterations  += n_iters
 
-        t          += control_horizon
-        solve_time += ytime
-        iterations += n_iters
-
-    # Tail step
-    if t < sim_time:
-        print(t)
-        print(sim_time-t)
-        params_mpc = param_slice(params, t, sim_time, sim_time, desired_length=pred_horizon+1)
-        init_slice = initialize_vsl[t:] if initialize_vsl is not None else None
-
-        n_iters, ytime, vsl_ctrl, vsl_full = _solve(t, sim_time - t, sim_time - t, state, init_slice, params_mpc)
-        full_control = np.vstack((full_control, vsl_ctrl))
-        solve_time  += ytime
-        iterations  += n_iters
+    except ValueError as exc:
+        print(f"[MPC] Solver failed at t={t} after exhausting all warm-start tiers: {exc}\n"
+              f"  Abandoning this run — saving VSL=150 everywhere (do-nothing control) for the full horizon.")
+        return np.full((sim_time, num_segments), 150.0)
 
     if verbose:
         n_solves = (total_time_steps // control_horizon +

@@ -1,5 +1,5 @@
 {
-    "hold_length": 36,
+    "hold_length": 51,
     "control_changepoints": null,
     "safety_temporal": null,
     "safety_spatial": null,
@@ -30,6 +30,6 @@
         50
     ],
     "tee": false,
-    "pred_horizon": 72,
-    "control_horizon": 36
+    "pred_horizon": 102,
+    "control_horizon": 51
 }
