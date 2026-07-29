@@ -5,6 +5,7 @@ import os
 from itertools import product
 from traffic_sim import *
 from mpc_metanet import *
+from param_loader import METANET_Params
 import matplotlib.colors as mcolors
 
 
@@ -214,7 +215,7 @@ if __name__ == "__main__":
     num_segments = int(total_distance/0.4)
 
     sim_lanes = {i: 4 if i < num_segments-5 else 2 for i in range(num_segments)}
-    params = DefaultParams(num_segments).get_params()
+    params = METANET_Params(path=None, num_segments=num_segments).get_params()
     num_scenarios = 14 * 2 + 1
     p_min = 5100
     p_max = 6500
