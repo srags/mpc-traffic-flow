@@ -46,7 +46,7 @@ HEATMAP_SAVE_PATH = os.path.join(REPO, "figs", "i24_safety_heatmap.png")
 # Fixed value of the *other* bound in each smoothness slice, in km/hr. Chosen
 # for coverage: these rows/columns of the grid have the most successful runs.
 # Set to None to auto-select whichever value has the most successful runs.
-FIXED_SPATIAL = 20.0     # held fixed in panel (c), the temporal curve
+FIXED_SPATIAL = 25.0     # held fixed in panel (c), the temporal curve
 FIXED_TEMPORAL = 25.0    # held fixed in panel (d), the spatial curve
 
 # Largest value of the swept parameter to plot in each panel, in that panel's
@@ -175,8 +175,10 @@ def slice_grid(grid, axis, fixed_value, max_value=None):
     pts = sorted((key[vary], cc) for key, cc in in_range.items()
                  if np.isclose(key[keep], fixed_value))
     n_available = sum(1 for key in grid if np.isclose(key[keep], fixed_value))
-    return (np.array([v for v, _ in pts]),
-            np.array([c for _, c in pts]),
+    print([v for v, _ in pts])
+    print([c for _, c in pts])
+    return (np.array([0] + [v for v, _ in pts]),
+            np.array([0] + [c for _, c in pts]),
             fixed_value,
             n_available - len(pts))
 
@@ -215,7 +217,7 @@ def _panel(ax, x, y, xlabel, title, logx=False):
                   fontname="Times New Roman")
     ax.set_title(title, fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
     ax.set_ylim(0, max(60, y_max * 1.2))
-    ax.set_xlim(float(np.min(x)), float(np.max(x)))
+    ax.set_xlim(0, float(np.max(x)))
     ax.grid(which="both", linestyle="-", linewidth=0.5, alpha=0.6)
     ax.set_axisbelow(True)
     ax.tick_params(labelsize=TEXT_FONTSIZE - 6)
@@ -294,7 +296,7 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
                   fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
     ax.set_ylabel(r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)",
                   fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
-    ax.tick_params(labelsize=TEXT_FONTSIZE - 6)
+    ax.tick_params(labelsize=TEXT_FONTSIZE - 2 )
     for lab in ax.get_xticklabels() + ax.get_yticklabels():
         lab.set_fontname("Times New Roman")
 
@@ -305,13 +307,13 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
                 if masked.mask[i, j]:
                     continue
                 ax.text(j, i, f"{values[i, j]:.0f}", ha="center", va="center",
-                        fontsize=TEXT_FONTSIZE - 8, fontname="Times New Roman",
+                        fontsize=TEXT_FONTSIZE - 4, fontname="Times New Roman",
                         color="white" if values[i, j] < threshold else "black")
 
     cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
     cbar.set_label("Controllable congestion (%)", fontsize=TEXT_FONTSIZE - 2,
                    fontname="Times New Roman")
-    cbar.ax.tick_params(labelsize=TEXT_FONTSIZE - 6)
+    cbar.ax.tick_params(labelsize=TEXT_FONTSIZE - 2)
     for lab in cbar.ax.get_yticklabels():
         lab.set_fontname("Times New Roman")
 

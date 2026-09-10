@@ -1,8 +1,8 @@
 {
     "hold_length": 1,
     "control_changepoints": null,
-    "safety_temporal": 25,
-    "safety_spatial": 1.5,
+    "safety_temporal": 5,
+    "safety_spatial": 25,
     "speed_lb": 0,
     "warmup_time": 0,
     "control_zone": [
@@ -20,7 +20,7 @@
         13
     ],
     "control_one_segment": null,
-    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/safety_sweep/optimal_vsl_temp25_spat1.8.npy",
+    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/safety_sweep/optimal_vsl_temp2_spat20.npy",
     "init_fixed": [
         "adaptive",
         120,
@@ -30,6 +30,6 @@
         40
     ],
     "tee": false,
-    "pred_horizon": 60,
+    "pred_horizon": 40,
     "control_horizon": 5
 }

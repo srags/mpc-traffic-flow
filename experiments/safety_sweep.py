@@ -168,8 +168,8 @@ def load_data(
 # Keep these in sync with the grid actually being swept in safety_sweep.ipynb —
 # they're only used to know which (safety_temporal, safety_spatial) combinations
 # to look for, so a mismatch just means some real results get missed, not an error.
-DEFAULT_SAFETY_TEMPORAL_VALUES = (1, 2, 3, 4, 5, 7.5, 10, 15, 20)
-DEFAULT_SAFETY_SPATIAL_VALUES = (1, 2, 3, 4, 5, 7.5, 10, 15, 20)
+DEFAULT_SAFETY_TEMPORAL_VALUES = (0.5, 1, 2, 3, 4, 5, 7.5, 10, 15, 20, 25)
+DEFAULT_SAFETY_SPATIAL_VALUES = (0.5, 1, 2, 3, 4, 5, 7.5, 10, 15, 20, 25)
 
 FIGS_DIR = "/Users/shreyaar/Desktop/PhD/research/MPC/figs"
 

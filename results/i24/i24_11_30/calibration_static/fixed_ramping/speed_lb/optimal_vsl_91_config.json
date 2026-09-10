@@ -20,7 +20,7 @@
         13
     ],
     "control_one_segment": null,
-    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/speed_lb/optimal_vsl_94.npy",
+    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/speed_lb/optimal_vsl_92.npy",
     "init_fixed": [
         91,
         100,
@@ -29,6 +29,6 @@
         150
     ],
     "tee": false,
-    "pred_horizon": 30,
+    "pred_horizon": 45,
     "control_horizon": 5
 }

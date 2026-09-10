@@ -20,9 +20,16 @@
         13
     ],
     "control_one_segment": null,
-    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/safety_sweep/optimal_vsl_temp25_spat1.4.npy",
-    "init_fixed": 60,
+    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/safety_sweep/optimal_vsl_temp25_spat1.8.npy",
+    "init_fixed": [
+        "adaptive",
+        120,
+        100,
+        80,
+        60,
+        40
+    ],
     "tee": false,
-    "pred_horizon": 30,
+    "pred_horizon": 60,
     "control_horizon": 5
 }
