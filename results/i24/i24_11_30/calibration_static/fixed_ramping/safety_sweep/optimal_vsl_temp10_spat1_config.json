@@ -1,0 +1,31 @@
+{
+    "hold_length": 1,
+    "control_changepoints": null,
+    "safety_temporal": 10,
+    "safety_spatial": 1,
+    "speed_lb": 0,
+    "warmup_time": 0,
+    "control_zone": [
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13
+    ],
+    "control_one_segment": null,
+    "initialize_vsl": "loaded from file /Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/calibration_static/fixed_ramping/safety_sweep/optimal_vsl_temp10_spat2.npy",
+    "init_fixed": [
+        100,
+        80
+    ],
+    "tee": false,
+    "pred_horizon": 30,
+    "control_horizon": 5
+}
