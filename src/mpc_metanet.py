@@ -2,7 +2,6 @@ import time
 import json
 
 import pyomo.environ as pyo
-from amplpy import modules
 
 import numpy as np
 import scipy.sparse as sp

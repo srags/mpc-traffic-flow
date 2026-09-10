@@ -1,197 +1,361 @@
-"""
-Plot controllable congestion (%) vs. minimum VSL speed limit, for the real
-I-24 corridor -- styled to match plot_constraints.ipynb's speedlimit plot.
+"""Operational-constraint sensitivity of controllable congestion on I-24.
 
-Data loading follows metanet_params.ipynb (cells 3-8, 24, 41).
-Plot styling follows plot_constraints.ipynb (cell 7).
+Produces a 2x2 figure for Section 6.3:
+
+    (a) hold length            (b) minimum posted speed limit
+    (c) temporal smoothness    (d) spatial smoothness
+
+Panels (c) and (d) are one-dimensional slices through the two-dimensional
+safety sweep: the temporal curve holds the spatial bound fixed at
+FIXED_SPATIAL, and the spatial curve holds the temporal bound fixed at
+FIXED_TEMPORAL, so each shows the effect of one constraint in isolation.
+
+Runs in which the solver exhausted every warm-start tier were saved as the
+do-nothing fallback (VSL = 150 km/hr everywhere, see mpc_metanet.mpc_find_vsl).
+These are detected and excluded rather than plotted as zeros, which would be
+indistinguishable from a genuinely uncontrollable configuration. The number
+excluded is reported at run time.
+
+Run from anywhere:
+
+    python experiments/I_24_constraint_plotting.py
 """
 
 import os
+import re
 import sys
-import json
+
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
-from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.ticker import AutoMinorLocator
 
-sys.path.append('../src')  # ADAPT: match your notebook's sys.path setup
-from traffic_sim import run_metanet_sim
-from param_loader import METANET_Params
-from generate_demand_synthetic import get_ff_tts
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(REPO, "src"))
 
-def smooth_inflow(inflow, window_size=2):
-    # Create averaging kernel
-    kernel = np.ones(window_size) / window_size
-    
-    # Compute asymmetric padding for even window sizes
-    pad_left = window_size // 2
-    pad_right = window_size - pad_left - 1
-
-    # Pad using boundary values (edge padding)
-    if inflow.ndim == 1:
-        padded = np.pad(inflow, (pad_left, pad_right), mode='edge')
-    else:
-        padded = np.pad(inflow, ((pad_left, pad_right), (0, 0)), mode='edge')
-
-    # Convolve along time dimension
-    smoothed = np.apply_along_axis(
-        lambda m: np.convolve(m, kernel, mode="valid"), axis=0, arr=padded
-    )
-    return smoothed
-
-# ---------------------------------------------------------------------------
-# Config -- mirrors metanet_params.ipynb cells 3-4 and cell 24's save location
-# ---------------------------------------------------------------------------
-L = 0.4
-time_step = 10 / 3600
-start_time = 0  # hours
-start_time_step = int(start_time / time_step)
-
-date = "i24_11_30"
-data_path = f"/Users/shreyaar/Desktop/PhD/research/MPC/data/i24/{date}"
-calibration_id = "calibration_static/fixed_ramping"
-calibration_interval = None  # None if static
-cal_path = (f'{data_path}/{calibration_id}' if calibration_interval is None
-            else f'{data_path}/{calibration_id}/control_h_{calibration_interval}')
-
-# Where mpc_find_vsl runs were saved -- ADAPT to match how you're saving per-speedlb
-# runs now (cell 41 used f"src/sim_params/{exp_path}/optimal_vsl_speedlb{speed}.npy";
-# your current mpc_opt.py setup saves to `results_path`, see metanet_params.ipynb cell 24)
-constraint = "speed_lb" #hold_length" # speed_lb
-vsl_dir = f"/Users/shreyaar/Desktop/PhD/research/MPC/results/i24/{date}/{calibration_id}/{constraint}"  # ADAPT
-
-# Sweep values -- ADAPT to whatever speed_lb values you've actually run
-constraint_values = [0, 10, 20, 30, 40, 50, 60, 70, 80, 85, 90, 91, 92, 93, 94, 95, 100, 110, 120]
-#[1, 2, 3, 4, 5, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48, 51, 54, 57, 60]
-
-if constraint == "hold_length":
-    save_name = "/Users/shreyaar/Desktop/PhD/research/MPC/figs/i24_hold_len.png"
-else:
-    save_name = "/Users/shreyaar/Desktop/PhD/research/MPC/figs/i24_speed_lb.png"
-
-# ---------------------------------------------------------------------------
-# Load I-24 data + calibrated params (metanet_params.ipynb cells 5-8)
-# ---------------------------------------------------------------------------
-assert os.path.exists(cal_path), f"Calibration parameters not found at {cal_path}"
-assert os.path.exists(f'{data_path}/v_hat.npy') and os.path.exists(f'{data_path}/rho_hat.npy'), \
-    f"Data not found at {data_path}"
-
-density_data = np.load(f'{data_path}/rho_hat.npy')
-flow_data = np.load(f'{data_path}/q_hat.npy')
-density_data = np.where(density_data == 0.0, 1e-3, density_data)
-flow_data = np.where(flow_data == 0.0, 1e-3, flow_data)
-velocity_data = flow_data / density_data
-
-true_density_initial = density_data[start_time_step, 1:-1].reshape(-1)
-true_velocity_initial = velocity_data[start_time_step, 1:-1].reshape(-1)
-
-downstream_density = density_data[0:, -1].reshape(-1)
-data_inflow = (velocity_data[0:, 0] * density_data[0:, 0]).reshape(-1)
-data_inflow = smooth_inflow(data_inflow, window_size=2)
-downstream_density = smooth_inflow(downstream_density, window_size=2)
-
-time_steps = downstream_density.shape[0]
-num_segments = density_data.shape[1] - 2
-
-lane_counts = (np.load(f'{cal_path}/num_lanes.npy').reshape(-1) if calibration_interval is None
-               else np.load(f'{cal_path}/params_1/num_lanes.npy').reshape(-1))
-lane_dict = {i: lane_counts[i] for i in range(num_segments)}
-
-downstream_density = downstream_density / lane_dict[num_segments - 1]
-true_density_initial = true_density_initial / lane_counts
-
-subfolders = [f for f in os.listdir(cal_path)
-              if os.path.isdir(os.path.join(cal_path, f)) and f.startswith("params_")]
-if subfolders:
-    control_h = time_steps // len(subfolders)
-    model_params = METANET_Params(path=f"{data_path}/{calibration_id}",
-                                   control_h=control_h, num_timesteps=time_steps,
-                                   num_segments=num_segments).get_params()
-else:
-    model_params = METANET_Params(path=cal_path, num_timesteps=time_steps,
-                                   num_segments=num_segments).get_params()
-
-init_state = (true_density_initial, true_velocity_initial, data_inflow[start_time_step], 0)
-
-# ---------------------------------------------------------------------------
-# Baseline (uncontrolled) run + free-flow travel time (metanet_params.ipynb cell 39)
-# ---------------------------------------------------------------------------
-_, _, _, tts_baseline = run_metanet_sim(
-    time_step, L, init_state,
-    data_inflow[start_time:], downstream_density[start_time:],
-    model_params, lanes=lane_dict, vsl_speeds=None,
-    plotting=True, real_data=True,
+from paths import fig, i24_results           # noqa: E402
+from cc_analysis import (                    # noqa: E402
+    L, time_step,
+    load_day_data, get_ff_tts,
 )
-ff_ttt = get_ff_tts(data_inflow, time_step, L, model_params['v_free'])
-delay_baseline = tts_baseline - ff_ttt
+from traffic_sim import run_metanet_sim      # noqa: E402
 
-# ---------------------------------------------------------------------------
-# Sweep over min speed limit values (metanet_params.ipynb cell 41)
-# ---------------------------------------------------------------------------
-opt_time = time_steps  # ADAPT if your saved optimal_vsl arrays cover a different horizon
-ccs, valid_constvals = [], []
+DATE = "11_30"
+SWEEP_ROOT = i24_results(DATE)
+SAVE_PATH = fig("i24_constraints.png")
+HEATMAP_SAVE_PATH = fig("i24_safety_heatmap.png")
 
-for value in constraint_values:
-    vsl_path = f"{vsl_dir}/optimal_vsl_{value}.npy"
-    if not os.path.exists(vsl_path):
-        print(f"[skip] no saved run for speed_lb={value} at {vsl_path}")
-        continue
+# Fixed value of the *other* bound in each smoothness slice, in km/hr. Chosen
+# for coverage: these rows/columns of the grid have the most successful runs.
+# Set to None to auto-select whichever value has the most successful runs.
+FIXED_SPATIAL = 25.0     # held fixed in panel (c), the temporal curve
+FIXED_TEMPORAL = 25.0    # held fixed in panel (d), the spatial curve
 
-    opt_vsl = np.load(vsl_path)
-    print(opt_vsl.shape)
-    _, _, _, tts_opt = run_metanet_sim(
-        time_step, L, init_state,
-        data_inflow[start_time:start_time + opt_time],
-        downstream_density[start_time:start_time + opt_time],
-        model_params, vsl_speeds=opt_vsl, lanes=lane_dict,
-        plotting=True, real_data=False,
+# Largest value of the swept parameter to plot in each panel, in that panel's
+# own units. Points above this are excluded, which also sets the right-hand
+# x-axis limit. None plots every available point.
+MAX_SPEED_LB = 120      # caps the x axis of panel (b), in km/hr
+MAX_TEMP = 10          # caps the x axis of panel (c), the temporal curve
+MAX_SPAT = 10          # caps the x axis of panel (d), the spatial curve
+
+TEXT_FONTSIZE = 18
+LINE_COLOR = "#2b6b4f"
+FILL_COLOR = "#4e9858"
+MAXLINE_COLOR = "#cf2e1c"
+
+
+# ── Baseline ─────────────────────────────────────────────────────────────────
+
+def load_baseline(date=DATE):
+    """Uncontrolled delay for `date`, against which every sweep run is scored."""
+    day = load_day_data(date)
+    params = day["static_params"]
+
+    _, _, _, tts_base = run_metanet_sim(
+        time_step, L, day["init_state"], day["data_inflow"],
+        day["ds_density_norm"], params, lanes=day["lane_dict"],
+        vsl_speeds=None, plotting=True, real_data=True,
     )
+    v_free = params["v_free"]
+    ff_ttt = get_ff_tts(day["data_inflow"], time_step, L,
+                        np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
+    return day, params, tts_base - ff_ttt, ff_ttt
 
-    opt_delay = tts_opt - ff_ttt
-    cc = (delay_baseline - opt_delay) / delay_baseline * 100
-    ccs.append(cc)
-    valid_constvals.append(value)
-    print(value, cc)
 
-# ---------------------------------------------------------------------------
-# Plot -- style matches plot_constraints.ipynb cell 7 (speedlimit branch)
-# ---------------------------------------------------------------------------
-plt.rcParams["font.family"] = "Times New Roman"
-plt.rcParams["font.size"] = 16
-text_fontsize = 20
+def is_fallback(vsl):
+    """True if this run is the do-nothing fallback saved after solver failure."""
+    return bool(np.all(vsl == 150.0))
 
-fig, ax1 = plt.subplots(figsize=(10, 5))
 
-colors = ["darkred", "red", "orange", "green", "darkgreen"]
-vals = [0, 0.15, 0.5, 0.9, 1.0]
-cmap = LinearSegmentedColormap.from_list("rg", list(zip(vals, colors)), N=256).reversed()
+def cc_for(path, day, params, delay_base, ff_ttt):
+    """Controllable congestion for one saved VSL run, or None if it failed."""
+    vsl = np.load(path)
+    if is_fallback(vsl):
+        return None
+    _, _, _, tts = run_metanet_sim(
+        time_step, L, day["init_state"], day["data_inflow"],
+        day["ds_density_norm"], params, lanes=day["lane_dict"],
+        vsl_speeds=vsl, plotting=True, real_data=False,
+    )
+    return float(np.clip((delay_base - (tts - ff_ttt)) / delay_base * 100, 0, 100))
 
-x = np.array(valid_constvals)
-y = np.array(ccs)
 
-if constraint == "hold_length":
-    ax1.set_xlabel("Hold Length (in min)", fontsize=text_fontsize)
-    x = np.array(valid_constvals) * 10 / 60
-elif constraint == "speed_lb":
-    ax1.set_xlabel("Min Speed Limit (kmph)", fontsize=text_fontsize)
+# ── Sweep loaders ────────────────────────────────────────────────────────────
 
-ax1.plot(x, y, color=cmap(0.7), linewidth=3)
+def load_scalar_sweep(subdir, ctx, max_value=None):
+    """Sweeps keyed by a single integer, i.e. hold_length and speed_lb.
 
-ax1.set_ylabel("Controllable Congestion (%)", fontsize=text_fontsize)
-ax1.set_ylim(-1, 60)
+    `max_value` caps the swept parameter in that sweep's own units (time steps
+    for hold_length, km/hr for speed_lb). Runs above the cap are skipped
+    without being simulated, and the cap becomes the right-hand x-axis limit
+    of the corresponding panel.
 
-ax1.xaxis.set_minor_locator(AutoMinorLocator())
-ax1.yaxis.set_minor_locator(AutoMinorLocator())
+    Returns (values, ccs, n_failed, n_capped) sorted by value, where both
+    counts refer to the plotted range.
+    """
+    path = f"{SWEEP_ROOT}/{subdir}"
+    out, failed, capped = [], 0, 0
+    for fname in os.listdir(path):
+        m = re.fullmatch(r"optimal_vsl_(\d+)\.npy", fname)
+        if not m:
+            continue
+        value = int(m.group(1))
+        if max_value is not None and value > max_value:
+            capped += 1
+            continue
+        cc = cc_for(os.path.join(path, fname), *ctx)
+        if cc is None:
+            failed += 1
+            continue
+        out.append((value, cc))
+    out.sort()
+    values = np.array([v for v, _ in out], dtype=float)
+    ccs = np.array([c for _, c in out])
+    return values, ccs, failed, capped
 
-for label in (ax1.get_xticklabels() + ax1.get_yticklabels()):
-    label.set_fontname("Times New Roman")
-    label.set_fontsize(text_fontsize - 2)
 
-ax1.grid(which="both", linestyle="-", linewidth=0.5)
+def load_safety_grid(ctx):
+    """Full (temporal, spatial) -> CC grid, excluding failed runs."""
+    path = f"{SWEEP_ROOT}/safety_sweep"
+    grid, failed = {}, 0
+    for fname in os.listdir(path):
+        m = re.fullmatch(r"optimal_vsl_temp([\d.]+)_spat([\d.]+)\.npy", fname)
+        if not m:
+            continue
+        cc = cc_for(os.path.join(path, fname), *ctx)
+        if cc is None:
+            failed += 1
+            continue
+        grid[(float(m.group(1)), float(m.group(2)))] = cc
+    return grid, failed
 
-plt.tight_layout()
-plt.savefig(save_name, dpi=300, bbox_inches='tight', pad_inches=0.1)
-plt.show()
 
-print("Speeds:", valid_constvals)
-print("Controllable congestion (%):", ccs)
+def slice_grid(grid, axis, fixed_value, max_value=None):
+    """One-dimensional slice through the safety grid.
+
+    axis="temporal" varies the temporal bound at a fixed spatial bound;
+    axis="spatial" does the reverse. If `fixed_value` is None, picks whichever
+    fixed value yields the most points.
+
+    `max_value` caps the swept bound: only points with bound <= max_value are
+    returned, which in turn sets the right-hand x-axis limit of the panel. The
+    cap is applied before the automatic choice of `fixed_value`, so that choice
+    reflects coverage over the plotted range rather than the whole grid.
+    """
+    keep = 1 if axis == "temporal" else 0     # index of the held-fixed bound
+    vary = 1 - keep
+
+    in_range = {key: cc for key, cc in grid.items()
+                if max_value is None or key[vary] <= max_value + 1e-9}
+
+    if fixed_value is None:
+        counts = {}
+        for key in in_range:
+            counts[key[keep]] = counts.get(key[keep], 0) + 1
+        fixed_value = max(counts, key=counts.get)
+
+    pts = sorted((key[vary], cc) for key, cc in in_range.items()
+                 if np.isclose(key[keep], fixed_value))
+    n_available = sum(1 for key in grid if np.isclose(key[keep], fixed_value))
+    print([v for v, _ in pts])
+    print([c for _, c in pts])
+    return (np.array([0] + [v for v, _ in pts]),
+            np.array([0] + [c for _, c in pts]),
+            fixed_value,
+            n_available - len(pts))
+
+
+def report_coverage(grid):
+    """Print how many successful runs each candidate fixed value has, so the
+    FIXED_SPATIAL / FIXED_TEMPORAL choices can be checked."""
+    for axis, keep, label in (("temporal", 1, "spatial"), ("spatial", 0, "temporal")):
+        counts = {}
+        for key in grid:
+            counts[key[keep]] = counts.get(key[keep], 0) + 1
+        summary = "  ".join(f"{v:g}:{n}" for v, n in sorted(counts.items()))
+        print(f"  points per fixed {label} bound ({axis} curve): {summary}")
+
+
+# ── Plotting ─────────────────────────────────────────────────────────────────
+
+def _panel(ax, x, y, xlabel, title, logx=False):
+    """One curve with shaded area and a horizontal line at the panel maximum."""
+    ax.plot(x, y, color=LINE_COLOR, linewidth=4, marker="o",
+            markersize=5, zorder=3)
+    ax.fill_between(x, 0, y, color=FILL_COLOR, alpha=0.25, zorder=2)
+
+    y_max = float(np.max(y))
+    ax.axhline(y_max, color=MAXLINE_COLOR, linestyle="--", linewidth=3,
+               zorder=4)
+    # ax.text(0.98, y_max, f" Max CC = {y_max:.1f}%", transform=ax.get_yaxis_transform(),
+    #         ha="right", va="bottom", color=MAXLINE_COLOR,
+    #         fontsize=TEXT_FONTSIZE - 6, fontname="Times New Roman",
+    #         fontweight="bold")
+
+    if logx:
+        ax.set_xscale("log")
+    ax.set_xlabel(xlabel, fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
+    ax.set_ylabel("Controllable congestion (%)", fontsize=TEXT_FONTSIZE - 2,
+                  fontname="Times New Roman")
+    ax.set_title(title, fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
+    ax.set_ylim(0, max(60, y_max * 1.2))
+    ax.set_xlim(0, float(np.max(x)))
+    ax.grid(which="both", linestyle="-", linewidth=0.5, alpha=0.6)
+    ax.set_axisbelow(True)
+    ax.tick_params(labelsize=TEXT_FONTSIZE - 6)
+    for lab in ax.get_xticklabels() + ax.get_yticklabels():
+        lab.set_fontname("Times New Roman")
+
+
+def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
+    original_font = mpl.rcParams["font.family"]
+    mpl.rcParams["font.family"] = "serif"
+    mpl.rcParams["font.serif"] = ["Times New Roman"]
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+
+    _panel(axes[0][0], hold[0] * 10 / 60, hold[1],
+           "Hold length (min)", "(a) Update interval")
+    _panel(axes[0][1], speed[0], speed[1],
+           "Minimum speed limit (km/hr)", "(b) Minimum posted speed limit")
+    _panel(axes[1][0], temporal[0], temporal[1],
+           r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)",
+           rf"(c) Temporal smoothness ($\mathcal{{S}}_{{\mathrm{{spat}}}}$ = {temporal[2]:g} km/hr)")
+    _panel(axes[1][1], spatial[0], spatial[1],
+           r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
+           rf"(d) Spatial smoothness ($\mathcal{{S}}_{{\mathrm{{temp}}}}$ = {spatial[2]:g} km/hr)")
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
+    print(f"\nFigure saved to: {save_path}")
+    mpl.rcParams["font.family"] = original_font
+    return fig
+
+
+def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3):
+    """Controllable congestion over the full (temporal, spatial) safety grid.
+
+    Combinations whose run failed are masked and drawn in grey, so that a
+    missing result is visually distinct from a genuinely low one.
+
+    `min_points` drops any row or column with fewer than that many successful
+    runs, which removes bounds that were only partially swept and would
+    otherwise appear as near-empty stripes. Set to 0 to keep everything.
+    """
+    import copy
+
+    original_font = mpl.rcParams["font.family"]
+    mpl.rcParams["font.family"] = "serif"
+    mpl.rcParams["font.serif"] = ["Times New Roman"]
+
+    temps = sorted({t for t, _ in grid})
+    spats = sorted({s for _, s in grid})
+    if min_points:
+        temps = [t for t in temps
+                 if sum(1 for k in grid if k[0] == t) >= min_points]
+        spats = [s for s in spats
+                 if sum(1 for k in grid if k[1] == s) >= min_points]
+        grid = {k: v for k, v in grid.items() if k[0] in temps and k[1] in spats}
+
+    values = np.full((len(temps), len(spats)), np.nan)
+    for (t, s), cc in grid.items():
+        values[temps.index(t), spats.index(s)] = cc
+    masked = np.ma.masked_invalid(values)
+
+    cmap = copy.copy(plt.cm.viridis)
+    cmap.set_bad(color="lightgray")
+
+    fig, ax = plt.subplots(figsize=(12, 7))
+    im = ax.imshow(masked, cmap=cmap, aspect="auto", origin="lower",
+                   vmin=0, vmax=float(masked.max()))
+
+    ax.set_xticks(range(len(spats)))
+    ax.set_xticklabels([f"{s:g}" for s in spats])
+    ax.set_yticks(range(len(temps)))
+    ax.set_yticklabels([f"{t:g}" for t in temps])
+    ax.set_xlabel(r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
+                  fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
+    ax.set_ylabel(r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)",
+                  fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
+    ax.tick_params(labelsize=TEXT_FONTSIZE - 2 )
+    for lab in ax.get_xticklabels() + ax.get_yticklabels():
+        lab.set_fontname("Times New Roman")
+
+    if annotate:
+        threshold = 0.55 * float(masked.max())
+        for i in range(len(temps)):
+            for j in range(len(spats)):
+                if masked.mask[i, j]:
+                    continue
+                ax.text(j, i, f"{values[i, j]:.0f}", ha="center", va="center",
+                        fontsize=TEXT_FONTSIZE - 4, fontname="Times New Roman",
+                        color="white" if values[i, j] < threshold else "black")
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+    cbar.set_label("Controllable congestion (%)", fontsize=TEXT_FONTSIZE - 2,
+                   fontname="Times New Roman")
+    cbar.ax.tick_params(labelsize=TEXT_FONTSIZE - 2)
+    for lab in cbar.ax.get_yticklabels():
+        lab.set_fontname("Times New Roman")
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    plt.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
+    print(f"Heatmap saved to: {save_path}")
+    mpl.rcParams["font.family"] = original_font
+    return fig
+
+
+if __name__ == "__main__":
+    day, params, delay_base, ff_ttt = load_baseline()
+    ctx = (day, params, delay_base, ff_ttt)
+    print(f"Baseline {DATE}: uncontrolled delay {delay_base:.2f} veh-hrs\n")
+
+    hold_x, hold_y, hold_failed, _ = load_scalar_sweep("hold_length", ctx)
+    print(f"hold_length: {len(hold_x)} runs used, {hold_failed} excluded (solver fallback)")
+
+    speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep(
+        "speed_lb", ctx, MAX_SPEED_LB)
+    print(f"speed_lb:    {len(speed_x)} runs used, {speed_failed} excluded (solver fallback)"
+          + ("" if MAX_SPEED_LB is None else
+             f", {speed_capped} beyond cap U_min <= {MAX_SPEED_LB:g}"))
+
+    grid, grid_failed = load_safety_grid(ctx)
+    print(f"safety_sweep: {len(grid)} runs used, {grid_failed} excluded (solver fallback)")
+    report_coverage(grid)
+
+    temp_x, temp_y, temp_fixed, temp_capped = slice_grid(
+        grid, "temporal", FIXED_SPATIAL, MAX_TEMP)
+    spat_x, spat_y, spat_fixed, spat_capped = slice_grid(
+        grid, "spatial", FIXED_TEMPORAL, MAX_SPAT)
+
+    print(f"\n(c) temporal curve at S_spat = {temp_fixed:g}: {len(temp_x)} points"
+          + ("" if MAX_TEMP is None else
+             f", capped at S_temp <= {MAX_TEMP:g} ({temp_capped} excluded)"))
+    print(f"(d) spatial  curve at S_temp = {spat_fixed:g}: {len(spat_x)} points"
+          + ("" if MAX_SPAT is None else
+             f", capped at S_spat <= {MAX_SPAT:g} ({spat_capped} excluded)"))
+
+    plot((hold_x, hold_y), (speed_x, speed_y),
+         (temp_x, temp_y, temp_fixed), (spat_x, spat_y, spat_fixed))
+    plot_heatmap(grid)

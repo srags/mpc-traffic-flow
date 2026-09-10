@@ -1,8 +1,15 @@
+import os
+import sys
+
 import numpy as np
 import pandas as pd
 from sympy import divisors
 
-def warm_starts_min_speedlimit(i, sim_time, num_segments, params, control_zone, path="/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/min_speedlimit"):
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paths import synthetic_results
+
+def warm_starts_min_speedlimit(i, sim_time, num_segments, params, control_zone, path=None):
+    path = synthetic_results("min_speedlimit") if path is None else path
     warm_starts = dict()
     # warm_starts['free_flow'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'] = np.full((sim_time, num_segments), params['v_free'])
@@ -24,7 +31,8 @@ def warm_starts_min_speedlimit(i, sim_time, num_segments, params, control_zone, 
 
     return warm_starts
 
-def warm_starts_hold_len(i, sim_time, num_segments, params, control_zone, path="/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/holdlength"):
+def warm_starts_hold_len(i, sim_time, num_segments, params, control_zone, path=None):
+    path = synthetic_results("holdlength") if path is None else path
     warm_starts = dict()
     warm_starts['free_flow'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'] = np.full((sim_time, num_segments), params['v_free'])
@@ -88,7 +96,8 @@ def warm_starts_hold_len(i, sim_time, num_segments, params, control_zone, path="
 
     return warm_starts
 
-def warm_starts_hold_len_shifted(i, sim_time, num_segments, params, control_zone, path="/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/holdlength_shifted"):
+def warm_starts_hold_len_shifted(i, sim_time, num_segments, params, control_zone, path=None):
+    path = synthetic_results("holdlength_shifted") if path is None else path
     warm_starts = dict()
     warm_starts['free_flow'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'] = np.full((sim_time, num_segments), params['v_free'])
@@ -124,7 +133,8 @@ def warm_starts_hold_len_shifted(i, sim_time, num_segments, params, control_zone
 
     return warm_starts
 
-def warm_starts_spatial_safety(i, sim_time, num_segments, params, control_zone, path="/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/spatial_safety"):
+def warm_starts_spatial_safety(i, sim_time, num_segments, params, control_zone, path=None):
+    path = synthetic_results("spatial_safety") if path is None else path
     warm_starts = dict()
     warm_starts['min_speed'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'][:, control_zone] = 40
@@ -151,14 +161,14 @@ def warm_starts_spatial_safety(i, sim_time, num_segments, params, control_zone, 
         pass
 
     # try:
-    #     prev_vsl = np.array(pd.read_csv(f"/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/spatial_safety/safety{i-5}.csv"))
+    #     prev_vsl = np.array(pd.read_csv(f"{path}/safety{i-5}.csv"))
     #     warm_starts['prev_vsl'] = prev_vsl
 
     # except FileNotFoundError:
     #     pass
 
     # try:
-    #     orig_vsl = np.array(pd.read_csv(f"/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/spatial_safety/safety{i}.csv"))
+    #     orig_vsl = np.array(pd.read_csv(f"{path}/safety{i}.csv"))
     #     warm_starts['orig_vsl'] = orig_vsl
 
     # except FileNotFoundError:
@@ -166,28 +176,29 @@ def warm_starts_spatial_safety(i, sim_time, num_segments, params, control_zone, 
 
     return warm_starts
 
-def warm_starts_temporal_safety(i, sim_time, num_segments, params, control_zone, path="/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/temporal_safety"):
+def warm_starts_temporal_safety(i, sim_time, num_segments, params, control_zone, path=None):
+    path = synthetic_results("temporal_safety") if path is None else path
     warm_starts = dict()
     warm_starts['free_flow'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'][:, control_zone] = 40
 
     # try:
-    #     opt_vsl = np.array(pd.read_csv(f"/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/temporal_safety/safety{40}.csv"))
+    #     opt_vsl = np.array(pd.read_csv(f"{path}/safety{40}.csv"))
     #     warm_starts['opt_vsl'] = opt_vsl
 
     # except FileNotFoundError:
     #     pass
 
     # try:
-    #     prev_vsl = np.array(pd.read_csv(f"/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/temporal_safety/safety{i+5}.csv"))
+    #     prev_vsl = np.array(pd.read_csv(f"{path}/safety{i+5}.csv"))
     #     warm_starts['prev_vsl'] = prev_vsl
 
     # except FileNotFoundError:
     #     pass
 
     # try:
-    #     prev_vsl = np.array(pd.read_csv(f"/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/temporal_safety/safety{i+1}.csv"))
+    #     prev_vsl = np.array(pd.read_csv(f"{path}/safety{i+1}.csv"))
     #     warm_starts['prev_vsl'] = prev_vsl
 
     # except FileNotFoundError:
@@ -202,7 +213,8 @@ def warm_starts_temporal_safety(i, sim_time, num_segments, params, control_zone,
 
     return warm_starts
 
-def warm_starts_one_gantry(i, sim_time, num_segments, params, control_zone, path="/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/gantry"):
+def warm_starts_one_gantry(i, sim_time, num_segments, params, control_zone, path=None):
+    path = synthetic_results("gantry") if path is None else path
     warm_starts = dict()
     warm_starts['free_flow'] = np.full((sim_time, num_segments), params['v_free'])
     warm_starts['min_speed'] = np.full((sim_time, num_segments), params['v_free'])

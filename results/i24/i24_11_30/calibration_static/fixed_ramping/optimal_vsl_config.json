@@ -21,5 +21,8 @@
     ],
     "control_one_segment": null,
     "initialize_vsl": null,
-    "init_fixed": null
+    "init_fixed": null,
+    "tee": false,
+    "pred_horizon": 45,
+    "control_horizon": 5
 }

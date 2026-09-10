@@ -2,6 +2,7 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
+from paths import fig
 from cc_analysis import run_static_analysis, run_static_dynamic_analysis, static_results_to_latex
 
 # ── Dates to sweep ───────────────────────────────────────────────────────────
@@ -36,13 +37,15 @@ if __name__ == "__main__":
     STATIC_TABLE_COLUMNS = ["date", "tts_mape", "uncontrolled_tts",
                             "controlled_tts", "cc", "avg_tt_reduced"]
     static_results = run_static_analysis(STATIC_DATES, columns=STATIC_TABLE_COLUMNS,
-                                         save_path="figs/i24_cc_table.png")
+                                         save_path=fig("i24_cc_table.png"),
+                                         bar_chart_save_path=fig("i24_cc_bar_chart.png"))
 
     latex_table = static_results_to_latex(static_results, columns=STATIC_TABLE_COLUMNS)
-    with open("figs/i24_cc_table.tex", "w") as f:
+    tex_path = fig("i24_cc_table.tex")
+    with open(tex_path, "w") as f:
         f.write(latex_table)
-    print("\nLaTeX table saved to: figs/i24_cc_table.tex\n")
+    print(f"\nLaTeX table saved to: {tex_path}\n")
     print(latex_table)
 
     # print("\n── Static + dynamic CC sweep ─────────────────────────────")
-    # run_static_dynamic_analysis(DYNAMIC_DATES, save_path="figs/i24_cc_table_withdyn.png")
+    # run_static_dynamic_analysis(DYNAMIC_DATES, save_path=fig("i24_cc_table_withdyn.png"))

@@ -7,6 +7,10 @@ from traffic_sim import *
 from mpc_metanet import *
 from param_loader import METANET_Params
 import matplotlib.colors as mcolors
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from paths import synthetic_results, fig
 
 
 def generate_demand(sim_time, time_step, peak_start=0.25, peak_end=0.75, flow_standard=2400, flow_peak=3000):
@@ -223,7 +227,7 @@ if __name__ == "__main__":
     text_fontsize = 20
 
 
-    tts, opt_tts, ff_tt, avg_tt, avg_speed = optimize_scenarios(num_scenarios,"/Users/shreyaar/Desktop/PhD/research/MPC/results/final_extended/demand/", 2, 10/3600, num_segments, 0.4, params, sim_lanes, peak_min=p_min, peak_max=p_max, flow_standard=4000, duration_range=durations)
+    tts, opt_tts, ff_tt, avg_tt, avg_speed = optimize_scenarios(num_scenarios, synthetic_results("demand"), 2, 10/3600, num_segments, 0.4, params, sim_lanes, peak_min=p_min, peak_max=p_max, flow_standard=4000, duration_range=durations)
     peak_demand = np.linspace(p_min, p_max, num_scenarios, endpoint=True)
     demand_options, _ = generate_demand_options(num_scenarios, 2, 10/3600, num_segments, 0.4, params, sim_lanes, peak_min=p_min, peak_max=p_max, flow_standard=4000, duration_range= durations)
 
@@ -282,7 +286,7 @@ if __name__ == "__main__":
     # move legend outside the plot
     # plt.legend( loc='upper left')
     # plt.legend(loc='upper left', fontsize=14)
-    plt.savefig(f"figs/delay_reduction.png", dpi=300, bbox_inches='tight', pad_inches=0.1)
+    plt.savefig(fig("delay_reduction.png"), dpi=300, bbox_inches='tight', pad_inches=0.1)
     plt.show()
     
 

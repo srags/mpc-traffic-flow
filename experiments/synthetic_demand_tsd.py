@@ -23,11 +23,12 @@ import matplotlib.pyplot as plt
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
+from paths import fig, synthetic_results         # noqa: E402
 from param_loader import METANET_Params          # noqa: E402
 from traffic_sim import run_metanet_sim          # noqa: E402
 
-DEMAND_DIR = os.path.join(REPO, "results", "synthetic_10km", "demand")
-SAVE_PATH = os.path.join(REPO, "figs", "synthetic_demand_tsd.png")
+DEMAND_DIR = synthetic_results("demand")
+SAVE_PATH = fig("synthetic_demand_tsd.png")
 
 # ── Scenario definition (mirrors generate_demand_synthetic.__main__) ─────────
 SIM_TIME = 2.0                                    # hours

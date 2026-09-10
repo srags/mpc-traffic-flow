@@ -40,7 +40,9 @@ from synthetic_demand_tsd import (        # noqa: E402
     REPO,
 )
 
-SAVE_PATH = os.path.join(REPO, "figs", "synthetic_cc_demand.png")
+from paths import fig                         # noqa: E402
+
+SAVE_PATH = fig("synthetic_cc_demand.png")
 
 PEAK_MIN, PEAK_MAX, NUM_SCENARIOS = 5100, 6500, 29
 TEXT_FONTSIZE = 18

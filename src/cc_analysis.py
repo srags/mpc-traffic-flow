@@ -14,8 +14,9 @@ L          = 0.4
 time_step  = 10 / 3600
 total_time = 1   # hours
 
-DATA_ROOT    = "/Users/shreyaar/Desktop/PhD/research/MPC/data/i24"
-RESULTS_ROOT = "/Users/shreyaar/Desktop/PhD/research/MPC/results/i24"
+# Re-exported under their historical names: experiments/i24_tsd.py and
+# experiments/i24_constraints.py import RESULTS_ROOT from this module.
+from paths import I24_DATA as DATA_ROOT, I24_RESULTS as RESULTS_ROOT, fig
 
 
 def mape(y_true, y_pred):
@@ -503,8 +504,8 @@ def static_results_to_latex(results, columns=None,
     return "\n".join(lines)
 
 
-def run_static_analysis(dates, columns=None, save_path="figs/i24_cc_table.png",
-                        bar_chart_save_path="figs/i24_avg_delay_bar.png"):
+def run_static_analysis(dates, columns=None, save_path=None,
+                        bar_chart_save_path=None):
     """
     Run the static-only sweep over `dates` and save/plot the results table
     and the average-delay-per-vehicle bar chart.
@@ -512,6 +513,12 @@ def run_static_analysis(dates, columns=None, save_path="figs/i24_cc_table.png",
     `columns` picks which fields (and in what order) appear in the table —
     see STATIC_COLUMNS for available keys. Defaults to DEFAULT_STATIC_COLUMNS.
     """
+    # Resolved here rather than in the signature so the defaults follow
+    # FIGS_ROOT instead of the caller's working directory.
+    save_path = fig("i24_cc_table.png") if save_path is None else save_path
+    bar_chart_save_path = (fig("i24_avg_delay_bar.png")
+                           if bar_chart_save_path is None else bar_chart_save_path)
+
     results = []
     for date in dates:
         print(f"\n── {date} ──────────────────────────────────")
@@ -535,8 +542,9 @@ def run_static_analysis(dates, columns=None, save_path="figs/i24_cc_table.png",
     return results
 
 
-def run_static_dynamic_analysis(dates, save_path="figs/i24_cc_table_withdyn.png"):
+def run_static_dynamic_analysis(dates, save_path=None):
     """Run the static+dynamic sweep over `dates` and save/plot the results table."""
+    save_path = fig("i24_cc_table_withdyn.png") if save_path is None else save_path
     results = []
     for date in dates:
         print(f"\n── {date} ──────────────────────────────────")

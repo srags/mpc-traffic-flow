@@ -8,7 +8,7 @@ congestion.
 
 Run from anywhere:
 
-    python experiments/i24_tsd.py
+    python experiments/I_24_tsd_plotting.py
 
 Saves to figs/i24_tsd.png and prints the delay / CC figures for each row.
 """
@@ -23,13 +23,14 @@ import matplotlib.pyplot as plt
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
+from paths import fig, i24_results           # noqa: E402
 from cc_analysis import (                    # noqa: E402
-    L, time_step, RESULTS_ROOT,
+    L, time_step,
     load_day_data, get_ff_tts, format_date_label,
 )
 from traffic_sim import run_metanet_sim      # noqa: E402
 
-SAVE_PATH = os.path.join(REPO, "figs", "i24_tsd.png")
+SAVE_PATH = fig("i24_tsd.png")
 
 DATES = ["11_28", "12_02"]
 # Segments 0 and 1 are left uncontrolled (see Section 5.2); the control zone
@@ -50,7 +51,7 @@ def run_day(date):
         vsl_speeds=None, plotting=True, real_data=True,
     )
 
-    vsl_path = f"{RESULTS_ROOT}/i24_{date}/calibration_static/fixed_ramping/optimal_vsl.npy"
+    vsl_path = i24_results(date, "optimal_vsl.npy")
     vsl = np.load(vsl_path)
 
     _, v_opt, _, tts_opt = run_metanet_sim(

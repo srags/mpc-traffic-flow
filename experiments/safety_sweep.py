@@ -20,6 +20,7 @@ _SRC_DIR = os.path.join(_THIS_DIR, "..", "src")
 if _SRC_DIR not in sys.path:
     sys.path.append(_SRC_DIR)
 
+from paths import DEFAULT_CALIBRATION, FIGS_ROOT, i24_data, i24_results
 from traffic_sim import run_metanet_sim
 from param_loader import METANET_Params
 from generate_demand_synthetic import get_ff_tts
@@ -49,31 +50,33 @@ def smooth_inflow(inflow, window_size=2):
 
 
 def load_data(
-    data_path="/Users/shreyaar/Desktop/PhD/research/MPC/data/i24/i24_11_30",
-    calibration_id="calibration_static/fixed_ramping",
+    date="11_30",
+    calibration_id=DEFAULT_CALIBRATION,
     calibration_interval=None,
     L=0.4,
     time_step=10 / 3600,
     start_time=0,
+    data_path=None,
 ):
     """Load the I-24 data/calibration, build the initial state, and run the
     "before control" baseline simulation — everything the sweep-plotting code
-    needs, mirroring the data-loading cells in safety_sweep.ipynb.
+    needs, mirroring the data-loading cells in run_safety_sweep.ipynb.
+
+    `date` drives both the data and the results location. `data_path` overrides
+    only the data side, for a corridor that does not live under data/i24.
     """
     start_time_step = int(start_time / time_step)
 
-    results_path = (
-        f"/Users/shreyaar/Desktop/PhD/research/MPC/results/i24/i24_11_30/"
-        f"{calibration_id}/safety_sweep"
+    data_path = i24_data(date) if data_path is None else data_path
+    results_path = i24_results(
+        date, "safety_sweep",
+        calibration_id=calibration_id, interval=calibration_interval,
     )
     cal_path = (
         f"{data_path}/{calibration_id}"
         if calibration_interval is None
         else f"{data_path}/{calibration_id}/control_h_{calibration_interval}"
     )
-    if calibration_interval is not None:
-        results_path += f"/control_h_{calibration_interval}"
-
     assert os.path.exists(cal_path), f"Calibration parameters not found at {cal_path}"
     assert os.path.exists(f"{data_path}/v_hat.npy") and os.path.exists(
         f"{data_path}/rho_hat.npy"
@@ -171,7 +174,7 @@ def load_data(
 DEFAULT_SAFETY_TEMPORAL_VALUES = (0.5, 1, 2, 3, 4, 5, 7.5, 10, 15, 20, 25)
 DEFAULT_SAFETY_SPATIAL_VALUES = (0.5, 1, 2, 3, 4, 5, 7.5, 10, 15, 20, 25)
 
-FIGS_DIR = "/Users/shreyaar/Desktop/PhD/research/MPC/figs"
+FIGS_DIR = FIGS_ROOT
 
 
 def main(
