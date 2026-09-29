@@ -250,6 +250,18 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .speed-control { display: flex; align-items: center; gap: 7px; }
 .speed-control select { padding: 6px 8px; }
 
+.sequence-key {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 9px 2px 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.sequence-key i { height: 14px; border-left: 4px solid #000; }
+
 .stats-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

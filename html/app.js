@@ -3,6 +3,7 @@
 const state = {
   scenarios: [],
   data: null,
+  cutoff: 0,
   frame: 0,
   playing: false,
   playbackSpeed: 1,
@@ -34,13 +35,18 @@ function colorFor(value, range, metric) {
   return mix(stops[index], stops[index + 1] ?? stops[index], scaled - index);
 }
 
-function formatClock(frame) {
+function formatClock(step) {
   const { metadata } = state.data;
-  const totalMinutes = metadata.startHour * 60 + frame * metadata.timeStepSeconds / 60;
-  const hour = Math.floor(totalMinutes / 60) % 24;
-  const minute = Math.floor(totalMinutes % 60);
-  const second = Math.round((totalMinutes - Math.floor(totalMinutes)) * 60);
+  const totalSeconds = Math.round(metadata.startHour * 3600 + step * metadata.timeStepSeconds);
+  const hour = Math.floor(totalSeconds / 3600) % 24;
+  const minute = Math.floor(totalSeconds / 60) % 60;
+  const second = totalSeconds % 60;
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
+}
+
+function displayedRow(metric, time) {
+  const source = time < state.cutoff ? state.data : state.data.baseline;
+  return source[metric][time];
 }
 
 function showError(message) {
@@ -59,7 +65,7 @@ function stopPlayback() {
   if (state.timer) window.clearInterval(state.timer);
   state.timer = null;
   $("#play-button").textContent = "▶";
-  $("#play-button").setAttribute("aria-label", "Play animation");
+  $("#play-button").setAttribute("aria-label", "Play optimization sequence");
 }
 
 function startPlayback() {
@@ -67,28 +73,34 @@ function startPlayback() {
   stopPlayback();
   state.playing = true;
   $("#play-button").textContent = "Ⅱ";
-  $("#play-button").setAttribute("aria-label", "Pause animation");
+  $("#play-button").setAttribute("aria-label", "Pause optimization sequence");
   state.timer = window.setInterval(() => {
-    setFrame(state.frame >= state.data.metadata.timeSteps - 1 ? 0 : state.frame + 1);
+    setCutoff(state.cutoff >= state.data.metadata.timeSteps ? 0 : state.cutoff + 1);
   }, Math.max(24, 180 / state.playbackSpeed));
 }
 
-function setFrame(frame) {
+function setCutoff(cutoff) {
   if (!state.data) return;
-  state.frame = Math.max(0, Math.min(state.data.metadata.timeSteps - 1, frame));
-  $("#timeline").value = state.frame;
-  const clock = formatClock(state.frame);
-  $("#road-time").textContent = clock;
-  $("#time-code").textContent = clock;
-  $("#step-code").textContent = `STEP ${String(state.frame + 1).padStart(3, "0")} / ${state.data.metadata.timeSteps}`;
+  const steps = state.data.metadata.timeSteps;
+  state.cutoff = Math.max(0, Math.min(steps, cutoff));
+  state.frame = state.cutoff === 0 ? 0 : Math.min(steps - 1, state.cutoff - 1);
+  $("#timeline").value = state.cutoff;
+  $("#road-time").textContent = formatClock(state.frame);
+  $("#time-code").textContent = formatClock(state.cutoff);
+  $("#step-code").textContent = state.cutoff === 0
+    ? "BASELINE"
+    : state.cutoff === steps
+      ? "FULL OPTIMAL"
+      : `OPTIMAL ${state.cutoff} / ${steps}`;
   updateRoad();
+  updateStats();
   drawHeatmaps();
 }
 
 function updateRoad() {
-  const { data, frame } = state;
-  const velocities = data.velocity[frame];
-  const densities = data.density[frame];
+  const { frame } = state;
+  const velocities = displayedRow("velocity", frame);
+  const densities = displayedRow("density", frame);
   $$(".road-segment").forEach((segment, index) => {
     const velocity = velocities[index];
     const density = densities[index];
@@ -103,6 +115,38 @@ function updateRoad() {
   const meanDensity = densities.reduce((sum, value) => sum + value, 0) / densities.length;
   $("#current-speed").textContent = meanSpeed.toFixed(1);
   $("#current-density").textContent = meanDensity.toFixed(1);
+}
+
+function updateStats() {
+  const { data, cutoff } = state;
+  const { timeSteps, segments, lanes, segmentLengthKm, timeStepSeconds } = data.metadata;
+  let velocitySum = 0;
+  let weightedDensitySum = 0;
+  let queueSum = 0;
+  let peakDensity = 0;
+  let peakQueue = 0;
+
+  for (let time = 0; time < timeSteps; time += 1) {
+    const source = time < cutoff ? data : data.baseline;
+    const queue = source.queue[time];
+    queueSum += queue;
+    peakQueue = Math.max(peakQueue, queue);
+    for (let segment = 0; segment < segments; segment += 1) {
+      const velocity = source.velocity[time][segment];
+      const density = source.density[time][segment];
+      velocitySum += velocity;
+      weightedDensitySum += density * lanes[segment];
+      peakDensity = Math.max(peakDensity, density);
+    }
+  }
+
+  const travelTime = timeStepSeconds / 3600 * (
+    segmentLengthKm * weightedDensitySum + queueSum
+  );
+  $("#travel-time").textContent = travelTime.toFixed(2);
+  $("#mean-velocity").textContent = (velocitySum / (timeSteps * segments)).toFixed(1);
+  $("#peak-density").textContent = peakDensity.toFixed(1);
+  $("#peak-queue").textContent = peakQueue.toFixed(1);
 }
 
 function animateRoad(timestamp) {
@@ -167,8 +211,8 @@ function buildRoad() {
     element.append(label);
     road.append(element);
 
-    const velocity = state.data.velocity[state.frame][segment];
-    const density = state.data.density[state.frame][segment];
+    const velocity = displayedRow("velocity", state.frame)[segment];
+    const density = displayedRow("density", state.frame)[segment];
     state.roadMotion.push({
       element,
       velocity,
@@ -181,8 +225,8 @@ function buildRoad() {
   ensureRoadAnimation();
 }
 
-function drawHeatmap(canvas, matrix, metric, range) {
-  if (!matrix.length) return;
+function drawHeatmap(canvas, optimized, baseline, metric, range) {
+  if (!optimized.length) return;
   const rect = canvas.getBoundingClientRect();
   const ratio = window.devicePixelRatio || 1;
   const height = 270;
@@ -195,26 +239,29 @@ function drawHeatmap(canvas, matrix, metric, range) {
   const margin = { left: 47, right: 14, top: 12, bottom: 34 };
   const plotWidth = rect.width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  const timeCount = matrix.length;
-  const segmentCount = matrix[0].length;
+  const timeCount = optimized.length;
+  const segmentCount = optimized[0].length;
   const cellWidth = plotWidth / timeCount;
   const cellHeight = plotHeight / segmentCount;
 
   for (let time = 0; time < timeCount; time += 1) {
+    const row = time < state.cutoff ? optimized[time] : baseline[time];
     for (let segment = 0; segment < segmentCount; segment += 1) {
-      context.fillStyle = colorFor(matrix[time][segment], range, metric);
+      context.fillStyle = colorFor(row[segment], range, metric);
       const y = margin.top + (segmentCount - segment - 1) * cellHeight;
       context.fillRect(margin.left + time * cellWidth, y, Math.ceil(cellWidth) + 0.5, Math.ceil(cellHeight) + 0.5);
     }
   }
 
-  context.strokeStyle = "rgba(255,255,255,.82)";
-  context.lineWidth = 1.5;
-  const cursorX = margin.left + state.frame / Math.max(1, timeCount - 1) * plotWidth;
-  context.beginPath();
-  context.moveTo(cursorX, margin.top);
-  context.lineTo(cursorX, margin.top + plotHeight);
-  context.stroke();
+  if (state.cutoff > 0 && state.cutoff < timeCount) {
+    context.strokeStyle = "#000";
+    context.lineWidth = 4;
+    const dividerX = margin.left + state.cutoff / timeCount * plotWidth;
+    context.beginPath();
+    context.moveTo(dividerX, margin.top);
+    context.lineTo(dividerX, margin.top + plotHeight);
+    context.stroke();
+  }
 
   context.fillStyle = "#81939b";
   context.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -240,34 +287,31 @@ function drawHeatmap(canvas, matrix, metric, range) {
 
 function drawHeatmaps() {
   if (!state.data) return;
-  drawHeatmap($("#velocity-heatmap"), state.data.velocity, "velocity", state.data.scales.velocity);
-  drawHeatmap($("#density-heatmap"), state.data.density, "density", state.data.scales.density);
+  drawHeatmap($("#velocity-heatmap"), state.data.velocity, state.data.baseline.velocity, "velocity", state.data.scales.velocity);
+  drawHeatmap($("#density-heatmap"), state.data.density, state.data.baseline.density, "density", state.data.scales.density);
 }
 
-function frameFromPointer(canvas, clientX) {
+function cutoffFromPointer(canvas, clientX) {
   const rect = canvas.getBoundingClientRect();
   const left = 47;
   const right = 14;
   const x = Math.max(0, Math.min(rect.width - left - right, clientX - rect.left - left));
-  return Math.round(x / (rect.width - left - right) * (state.data.metadata.timeSteps - 1));
+  return Math.round(x / (rect.width - left - right) * state.data.metadata.timeSteps);
 }
 
 function renderScenario() {
   const { data } = state;
+  state.cutoff = 0;
   state.frame = 0;
   buildRoad();
   $("#visualization").hidden = false;
   $("#road-end").textContent = `Segment ${String(data.metadata.segments).padStart(2, "0")} · ${(data.metadata.segments * data.metadata.segmentLengthKm).toFixed(1)} km`;
-  $("#timeline").max = data.metadata.timeSteps - 1;
-  $("#travel-time").textContent = data.stats.travelTime.toFixed(2);
-  $("#mean-velocity").textContent = data.stats.meanVelocity.toFixed(1);
-  $("#peak-density").textContent = data.stats.peakDensity.toFixed(1);
-  $("#peak-queue").textContent = data.stats.peakQueue.toFixed(1);
+  $("#timeline").max = data.metadata.timeSteps;
   $("#velocity-max").textContent = `${data.scales.velocity[1].toFixed(0)} km/h`;
   $("#density-max").textContent = `${data.scales.density[1].toFixed(0)} veh/km/lane`;
   $("#source-path").textContent = `Source · results/${data.scenario.id}`;
   $("#resolution").textContent = `${data.metadata.segments} segments · ${data.metadata.timeStepSeconds.toFixed(0)}-second resolution`;
-  setFrame(0);
+  setCutoff(0);
 }
 
 async function loadScenario(id) {
@@ -324,7 +368,7 @@ $("#scenario-select").addEventListener("change", (event) => {
 });
 
 $("#play-button").addEventListener("click", () => state.playing ? stopPlayback() : startPlayback());
-$("#timeline").addEventListener("input", (event) => setFrame(Number(event.target.value)));
+$("#timeline").addEventListener("input", (event) => setCutoff(Number(event.target.value)));
 $("#playback-speed").addEventListener("change", (event) => {
   state.playbackSpeed = Number(event.target.value);
   if (state.playing) startPlayback();
@@ -332,10 +376,10 @@ $("#playback-speed").addEventListener("change", (event) => {
 
 for (const id of ["velocity-heatmap", "density-heatmap"]) {
   const canvas = $(`#${id}`);
-  canvas.addEventListener("click", (event) => setFrame(frameFromPointer(canvas, event.clientX)));
+  canvas.addEventListener("click", (event) => setCutoff(cutoffFromPointer(canvas, event.clientX)));
   canvas.addEventListener("keydown", (event) => {
-    if (event.key === "ArrowLeft") setFrame(state.frame - 1);
-    if (event.key === "ArrowRight") setFrame(state.frame + 1);
+    if (event.key === "ArrowLeft") setCutoff(state.cutoff - 1);
+    if (event.key === "ArrowRight") setCutoff(state.cutoff + 1);
   });
 }
 

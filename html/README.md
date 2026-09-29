@@ -7,6 +7,10 @@ and an aggregate road view. A continuous moving herringbone pattern shows
 velocity by segment, while the fill height shows density; it does not imply
 individual vehicle positions or a fixed number of lanes.
 
+The playback timeline is an optimization cutoff. It starts with the complete
+no-control baseline and progressively replaces it with optimized results from
+left to right. A black divider marks the optimized history and baseline future.
+
 It uses only plain HTML, CSS, JavaScript, Python, and NumPy. There is no Node.js,
 `npm`, or `pnpm` setup.
 

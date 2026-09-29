@@ -52,10 +52,10 @@
         </div>
       </section>
 
-      <section class="transport" aria-label="Playback controls">
-        <button class="play" id="play-button" aria-label="Play animation">▶</button>
+      <section class="transport" aria-label="Optimization sequence controls">
+        <button class="play" id="play-button" aria-label="Play optimization sequence">▶</button>
         <span class="time-code" id="time-code">07:30:00</span>
-        <input id="timeline" type="range" min="0" value="0" aria-label="Simulation time">
+        <input id="timeline" type="range" min="0" value="0" aria-label="Optimized-through time">
         <span class="step-code" id="step-code"></span>
         <label class="speed-control" for="playback-speed">
           <span>Speed</span>
@@ -67,6 +67,12 @@
           </select>
         </label>
       </section>
+
+      <div class="sequence-key" aria-label="Time-space diagram regions">
+        <span>Optimized history</span>
+        <i aria-hidden="true"></i>
+        <span>Baseline future</span>
+      </div>
 
       <section class="stats-grid" aria-label="Scenario summary">
         <article><span>Travel time</span><strong id="travel-time">—</strong><small>veh-hr</small></article>

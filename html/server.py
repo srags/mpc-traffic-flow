@@ -211,6 +211,12 @@ def load_scenario(scenario_id: str) -> dict[str, object]:
         lanes={index: float(count) for index, count in enumerate(lanes)},
         real_data=False,
     )
+    baseline_density, baseline_velocity, baseline_queue, _ = simulator.run_with_history(
+        demand=demand,
+        downstream_density=downstream_density,
+        init_traffic_state=MetanetState(initial_density, initial_velocity, float(demand[0]), 0.0),
+        vsl_speeds=None,
+    )
     density, velocity, queue, travel_time = simulator.run_with_history(
         demand=demand,
         downstream_density=downstream_density,
@@ -220,12 +226,15 @@ def load_scenario(scenario_id: str) -> dict[str, object]:
     density = density[:-1]
     velocity = velocity[:-1]
     queue_values = queue[:-1, 0]
+    baseline_density = baseline_density[:-1]
+    baseline_velocity = baseline_velocity[:-1]
+    baseline_queue_values = baseline_queue[:-1, 0]
 
     config_path = result_path.with_name(f"{result_path.stem}_config.json")
     config = json.loads(config_path.read_text()) if config_path.exists() else {}
     summary = next(item for item in discover_scenarios() if item["id"] == scenario_id)
-    velocity_max = max(120.0, float(np.ceil(np.max(velocity) / 10) * 10))
-    density_max = max(80.0, float(np.ceil(np.max(density) / 10) * 10))
+    velocity_max = max(120.0, float(np.ceil(max(np.max(velocity), np.max(baseline_velocity)) / 10) * 10))
+    density_max = max(80.0, float(np.ceil(max(np.max(density), np.max(baseline_density)) / 10) * 10))
 
     return {
         "scenario": summary,
@@ -233,6 +242,11 @@ def load_scenario(scenario_id: str) -> dict[str, object]:
         "density": np.round(density, 3).tolist(),
         "vsl": np.round(vsl, 3).tolist(),
         "queue": np.round(queue_values, 3).tolist(),
+        "baseline": {
+            "velocity": np.round(baseline_velocity, 3).tolist(),
+            "density": np.round(baseline_density, 3).tolist(),
+            "queue": np.round(baseline_queue_values, 3).tolist(),
+        },
         "config": config,
         "metadata": {
             "timeSteps": steps,
@@ -240,6 +254,7 @@ def load_scenario(scenario_id: str) -> dict[str, object]:
             "segments": segments,
             "segmentLengthKm": float(network_info["segment_length_km"]),
             "startHour": float(network_info["start_hour"]),
+            "lanes": np.asarray(lanes, dtype=float).tolist(),
         },
         "stats": {
             "travelTime": round(float(travel_time), 4),
