@@ -143,3 +143,63 @@ class TestSimulatorRegression(unittest.TestCase):
 
         self.assertAlmostEqual(final_state.queue, 1.666666666666664)
         self.assertAlmostEqual(final_state.demand, 3799.999999999999)
+
+    def test_history_methods_preserve_states_and_travel_time(self):
+        for real_data in (False, True):
+            for steps in (0, 1, 3):
+                for controlled in (False, True):
+                    with self.subTest(real_data=real_data, steps=steps, controlled=controlled):
+                        demand = np.linspace(3000., 3300., steps + 1)
+                        downstream = np.full(steps, 45.)
+                        vsl = np.tile([105., 80., 55.], (steps, 1)) if controlled else None
+
+                        def simulator():
+                            sim = self.make_simulator()
+                            sim.real_data = real_data
+                            return sim
+
+                        # Record the existing initialization/step contract independently
+                        # of either public history collector.
+                        reference = simulator()
+                        reference._initialize(demand, downstream, self.state, vsl)
+                        states = [reference.cur_state]
+                        for t in range(steps):
+                            states.append(reference._step(t, states[-1]))
+                        expected_density = np.stack([s.density for s in states])
+                        expected_velocity = np.stack([s.velocity for s in states])
+                        expected_queue = np.array([[s.queue] for s in states])
+                        expected_flow = np.array([[s.demand] for s in states])
+
+                        final, streaming_ttt = simulator().run(demand, downstream, self.state, vsl)
+                        history_sim = simulator()
+                        density, velocity, queue, ttt = history_sim.run_with_history(
+                            demand, downstream, self.state, vsl
+                        )
+                        opt_sim = simulator()
+                        opt_density, opt_velocity, opt_queue, flow, fd, opt_ttt = opt_sim.run_with_opt(
+                            demand, downstream, self.state, vsl
+                        )
+
+                        for actual, expected in (
+                            (density, expected_density), (opt_density, expected_density),
+                            (velocity, expected_velocity), (opt_velocity, expected_velocity),
+                            (queue, expected_queue), (opt_queue, expected_queue),
+                            (flow, expected_flow),
+                        ):
+                            np.testing.assert_array_equal(actual, expected)
+                        for sim in (history_sim, opt_sim):
+                            np.testing.assert_array_equal(sim.cur_state.density, final.density)
+                            np.testing.assert_array_equal(sim.cur_state.velocity, final.velocity)
+                            self.assertEqual(sim.cur_state.queue, final.queue)
+                            self.assertEqual(sim.cur_state.demand, final.demand)
+                        self.assertAlmostEqual(ttt, streaming_ttt)
+                        self.assertAlmostEqual(opt_ttt, streaming_ttt)
+                        expected_fd = np.empty((steps, 3))
+                        for t in range(steps):
+                            for i in range(3):
+                                expected_fd[t, i] = calculate_V(
+                                    expected_density[t, i], vsl[t, i] if vsl is not None else 1000,
+                                    self.params["a"][i], self.params["p_crit"][i],
+                                    self.params["v_free"][i],
+                                )
+                        np.testing.assert_allclose(fd, expected_fd, rtol=1e-12, atol=1e-12)

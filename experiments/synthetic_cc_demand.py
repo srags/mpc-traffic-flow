@@ -36,7 +36,7 @@ from paths import REPO_DIR
 
 from synthetic_demand_tsd import (        # noqa: E402
     NUM_SEGMENTS,
-    METANET_Params,
+    load_metanet_params,
     run_scenario,
     REPO,
 )
@@ -120,7 +120,7 @@ def plot(results, save_path=SAVE_PATH):
 
 
 if __name__ == "__main__":
-    params = METANET_Params(path=None, num_segments=NUM_SEGMENTS).get_params()
+    params = load_metanet_params(path=None, num_segments=NUM_SEGMENTS)
     peaks = np.linspace(PEAK_MIN, PEAK_MAX, NUM_SCENARIOS, endpoint=True)
 
     print("── CC vs peak demand ─────────────────────────────────────")

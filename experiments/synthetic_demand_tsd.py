@@ -24,7 +24,7 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 from paths import REPO_DIR
 sys.path.insert(0, os.path.join(REPO, "src"))
 
-from param_loader import METANET_Params          # noqa: E402
+from param_loader import load_metanet_params          # noqa: E402
 from traffic_sim import METANET_Simulator        # noqa: E402
 from sim_types import MetanetState
 
@@ -182,7 +182,7 @@ def plot(results, save_path=SAVE_PATH):
 
 
 if __name__ == "__main__":
-    params = METANET_Params(path=None, num_segments=NUM_SEGMENTS).get_params()
+    params = load_metanet_params(path=None, num_segments=NUM_SEGMENTS)
 
     results = []
     for peak in DEMANDS:

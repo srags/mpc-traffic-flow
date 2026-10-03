@@ -31,6 +31,7 @@ def append_number_csv(path, number):
         f.flush()
 
 from scipy.optimize import minimize
+from param_loader import param_slice
 
 def mpc_opt_shooting(T, l, num_segments, traffic_demand, downstream_density,
                      horizon_p, horizon_c, starting_traffic_vars, lanes,
@@ -504,21 +505,6 @@ def mpc_opt(
 
     return iters, solve_time, vsl_speeds_c, vsl_speeds_p, density_error, velocity_error
 
-def param_slice(params: MetanetParams, start_time_step, end_time_step, total_time_steps, desired_length=None
-                ) -> MetanetParams:
-    sliced_params = {}
-    for key, value in params.items():
-        if isinstance(value, np.ndarray) and value.shape[0] == total_time_steps:
-            sliced_params[key] = value[start_time_step:end_time_step, :].copy()
-
-            if desired_length is not None and sliced_params[key].shape[0] < desired_length:
-                sliced_params[key] = np.append(sliced_params[key], np.tile(value[-1], (desired_length - sliced_params[key].shape[0], 1)), axis=0)
-
-                assert sliced_params[key].shape[0] == desired_length, f"Parameter {key} has length {sliced_params[key].shape[0]}, expected {desired_length}"
-        else:
-            sliced_params[key] = value
-    return cast(MetanetParams, sliced_params)
-
 def mpc_find_vsl(
     total_time_steps: int, 
     traffic_demand: time_vec, downstream_density: time_vec, lanes: lane_map,
@@ -609,7 +595,7 @@ def mpc_find_vsl(
             #     print(f"[MPC] t = {t}")
 
             assert params is not None
-            params_mpc: MetanetParams = param_slice(params, t, t+pred_horizon, sim_time, desired_length=pred_horizon)
+            params_mpc: MetanetParams = param_slice(params, t, t+pred_horizon, desired_length=pred_horizon)
 
             sim = METANET_Simulator(T=T, l=l, params=params_mpc, lanes=lanes, real_data=False)
 
@@ -663,7 +649,7 @@ def mpc_find_vsl(
         # Tail step
         if t < sim_time:
             assert params is not None
-            params_mpc = param_slice(params, t, sim_time, sim_time, desired_length=pred_horizon+1)
+            params_mpc = param_slice(params, t, sim_time, desired_length=pred_horizon+1)
             init_slice = initialize_vsl[t:] if initialize_vsl is not None else None
 
             n_iters, ytime, vsl_ctrl, vsl_full, d_e, v_e = _solve(t, sim_time - t, sim_time - t, state, init_slice, params_mpc)

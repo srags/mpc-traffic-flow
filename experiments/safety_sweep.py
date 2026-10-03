@@ -24,7 +24,7 @@ from sim_types import MetanetState
 from paths import DEFAULT_CALIBRATION
 from paths import REPO_DIR
 from traffic_sim import METANET_Simulator
-from param_loader import METANET_Params
+from param_loader import load_metanet_params
 from generate_demand_synthetic import get_ff_tts
 
 from safety_sweep_plots import (
@@ -73,9 +73,9 @@ def load_data(
     results_path = REPO_DIR / "results" / f"i24_{date}" / calibration_id / \
         (f"control_h_{calibration_interval}" if calibration_interval else "") / "safety_sweep"
     cal_path = (
-        f"{data_path}/{calibration_id}"
+        data_path / calibration_id
         if calibration_interval is None
-        else f"{data_path}/{calibration_id}/control_h_{calibration_interval}"
+        else data_path / calibration_id / f"control_h_{calibration_interval}"
     )
     assert os.path.exists(cal_path), f"Calibration parameters not found at {cal_path}"
     assert os.path.exists(f"{data_path}/v_hat.npy") and os.path.exists(
@@ -118,14 +118,14 @@ def load_data(
     ]
     if subfolders:
         control_h = time_steps // len(subfolders)
-        model_params = METANET_Params(
-            path=f"{data_path}/{calibration_id}", control_h=control_h,
+        model_params = load_metanet_params(
+            path=data_path / calibration_id, control_h=control_h,
             num_timesteps=time_steps, num_segments=num_segments,
-        ).get_params()
+        )
     else:
-        model_params = METANET_Params(
+        model_params = load_metanet_params(
             path=cal_path, num_timesteps=time_steps, num_segments=num_segments,
-        ).get_params()
+        )
 
     init_state = MetanetState(
         true_density_initial,

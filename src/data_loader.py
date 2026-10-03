@@ -1,6 +1,6 @@
 from paths import REPO_DIR
 from sim_types import *
-from param_loader import METANET_Params
+from param_loader import load_metanet_params
 import os, pathlib
 from paths import ensure_dir
 from typing import Literal
@@ -67,11 +67,12 @@ class Freeway:
 
     if subfolders:
       print(f"Dynamic parameters detected: {len(subfolders)} subfolder(s) found")
-      control_h = self.time_steps // len(subfolders)
-      return METANET_Params(path=self.data_path/calibration_id, control_h=control_h, num_timesteps=self.time_steps, num_segments=self.num_segments).get_params()
+      if calibration_interval is None or calibration_interval <= 0:
+        raise ValueError("Dynamic parameters require a positive calibration_interval")
+      return load_metanet_params(path=self.data_path/calibration_id, control_h=calibration_interval, num_timesteps=self.time_steps, num_segments=self.num_segments)
     else:
       print("No dynamic parameter subfolders found — using static calibration parameters")
-      return METANET_Params(path=cal_path, num_timesteps=self.time_steps, num_segments=self.num_segments).get_params()
+      return load_metanet_params(path=cal_path, num_timesteps=self.time_steps, num_segments=self.num_segments)
 
   def results_path(self, 
                    calibration_id: str = "calibration_static/fixed_ramping", 

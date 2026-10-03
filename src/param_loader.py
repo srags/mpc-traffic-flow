@@ -1,101 +1,73 @@
 import numpy as np
-import os
 from sim_types import MetanetParams
+from pathlib import Path
+from typing import cast
 
-class METANET_Params:
-    def __init__(self, path=None, control_h=None, num_timesteps=360, num_segments=14):
-        if path is not None and control_h is not None:
-            self.params: MetanetParams = {
-                "tau": np.array(0),
-                "K": np.array(0),
-                "eta_high": np.array(0),
-                "p_crit": np.array(0),
-                "v_free": np.array(0),
-                "a": np.array(0),
-                'q_capacity': np.array(0),
-                'r': np.array(0),
-                'beta': np.array(0),
-                'gamma': np.array(0)
-            }
-            
-            num_params = int(num_timesteps/control_h)
+def _load_parameter_block(path: Path, num_segments: int) -> MetanetParams:
+    def optional(filename: str, default: float) -> np.ndarray:
+        try: return np.load(path / filename)
+        except FileNotFoundError: return np.full(num_segments, default)
 
-            for i in range(1, num_params+1):
-                fold_path = f'{path}/control_h_{control_h}/params_{i}'
-                if os.path.exists(fold_path):
-                    params_i = {
-                        "tau": np.load(f'{fold_path}/tau.npy').reshape(-1),
-                        "K": np.load(f'{fold_path}/K.npy').reshape(-1),
-                        "eta_high": np.load(f'{fold_path}/eta_high.npy').reshape(-1),
-                        "p_crit": np.load(f'{fold_path}/rho_crit.npy').reshape(-1),
-                        "v_free": np.load(f'{fold_path}/v_free.npy').reshape(-1),
-                        "a": np.load(f'{fold_path}/a.npy').reshape(-1),
-                        'q_capacity': np.array([2400 for i in range(num_segments)])
-                    }
-                    try:
-                        params_i['r'] = np.load(f'{fold_path}/r_inflow_array.npy')
-                    except:
-                        params_i['r'] = np.array([0 for i in range(num_segments)])
-                    try:
-                        params_i['beta'] = np.load(f'{fold_path}/beta_array.npy')
-                    except:
-                        params_i['beta'] = np.array([0 for i in range(num_segments)])
-                    try:
-                        params_i['gamma'] = np.load(f'{fold_path}/gamma_array.npy')
-                    except:
-                        params_i['gamma'] = np.array([1 for i in range(num_segments)])
-   
-                    for key in self.params.keys():
-                        new_params = np.tile(params_i[key], (control_h, 1))
-                        self.params[key] = np.vstack((self.params[key], new_params)) if self.params[key] is not None else new_params
-                
-            for key in self.params.keys():
-                assert(self.params[key].shape[0] == num_timesteps)
-            # Combine params from all foldes in path + "control_h_{control_h}"
-            
+    return {
+        "tau": np.load(path / "tau.npy"),
+        "K": np.load(path / "K.npy"),
+        "eta_high": np.load(path / "eta_high.npy"),
+        "p_crit": np.load(path / "rho_crit.npy"),
+        "v_free": np.load(path / "v_free.npy"),
+        "a": np.load(path / "a.npy"),
+        "q_capacity": np.full(num_segments, 2400),
+        "r": optional("r_inflow_array.npy", default=0),
+        "beta": optional("beta_array.npy", default=0),
+        "gamma": optional("gamma_array.npy", default=1),
+    }
 
-        elif path is not None:
-            self.params = {
-                "tau": np.load(f'{path}/tau.npy'),
-                "K": np.load(f'{path}/K.npy'),
-                "eta_high": np.load(f'{path}/eta_high.npy'),
-                "p_crit": np.load(f'{path}/rho_crit.npy'),
-                "v_free": np.load(f'{path}/v_free.npy'),
-                "a": np.load(f'{path}/a.npy'),
-                'q_capacity': np.array([2400 for i in range(num_segments)]),
-                "r": np.array([]),
-                "beta": np.array([]),
-                "gamma": np.array([])
-            }
-            try:
-                self.params['r'] = np.load(f'{path}/r_inflow_array.npy')
-            except:
-                self.params['r'] = np.array([0 for i in range(num_segments)])
-            try:
-                self.params['beta'] = np.load(f'{path}/beta_array.npy')
-            except:
-                self.params['beta'] = np.array([0 for i in range(num_segments)])
-            try:
-                self.params['gamma'] = np.load(f'{path}/gamma_array.npy')
-            except:
-                self.params['gamma'] = np.array([1 for i in range(num_segments)])
+def param_slice(params: MetanetParams, start_time_step, end_time_step, desired_length=None
+                ) -> MetanetParams:
+    sliced_params = {}
+    for key, value in params.items():
+        if isinstance(value, np.ndarray) and value.ndim == 2:
+            sliced_params[key] = value[start_time_step:end_time_step, :].copy()
+            if desired_length is not None and sliced_params[key].shape[0] < desired_length:
+                sliced_params[key] = np.append(sliced_params[key], np.tile(value[-1], (desired_length - sliced_params[key].shape[0], 1)), axis=0)
+                assert sliced_params[key].shape[0] == desired_length, f"Parameter {key} has length {sliced_params[key].shape[0]}, expected {desired_length}"
         else:
-            # Use default
-            self.params = {
-                "tau": np.array([18/3600 for i in range(num_segments)]),
-                "K": np.array([40 for i in range(num_segments)]),
-                "eta_high": np.array([30 for i in range(num_segments)]),
-                "p_crit": np.array([37.45 for i in range(num_segments)]),
-                "v_free": np.array([120 for i in range(num_segments)]),
-                "a": np.array([1.4 for i in range(num_segments)]),
-                'q_capacity': np.array([2400 for i in range(num_segments)]),
-                'r' : np.array([0 for i in range(num_segments)]),
-                'beta' : np.array([0 for i in range(num_segments)]),
-                'gamma' : np.array([1 for i in range(num_segments)])
-            }
+            sliced_params[key] = value
+    return cast(MetanetParams, sliced_params)
 
-    def get_params(self) -> MetanetParams:
-        return self.params
+def load_metanet_params(path: Path | None = None, control_h: int | None = None, num_timesteps: int = 360, num_segments: int = 14) -> MetanetParams:
+    if path is not None and control_h is not None:
+        if control_h <= 0 or num_timesteps <= 0:
+            raise ValueError("control_h and num_timesteps must be positive")
 
-    def get_param(self, key):
-        return self.params.get(key, None)
+        blocks: dict[str, list[np.ndarray]] = {}
+        base_path = Path(path) / f"control_h_{control_h}"
+
+        for i, start in enumerate(range(0, num_timesteps, control_h), start=1):
+            duration = min(control_h, num_timesteps - start)
+            for key, values in _load_parameter_block(base_path / f"params_{i}", num_segments).items():
+                values = cast(np.ndarray, values).reshape(-1)
+                if values.size != num_segments:
+                    raise ValueError(
+                        f"params_{i}/{key}: expected {num_segments} "
+                        f"values, got {values.size}"
+                    )
+                block = np.tile(values, (duration, 1))
+                blocks.setdefault(key, []).append(block)
+        return cast(MetanetParams, {key: np.concatenate(parts, axis=0) for key, parts in blocks.items()})
+    elif path is not None:
+        return _load_parameter_block(Path(path), num_segments)
+    else:
+        # Use default
+        defaults = {
+            "tau": 18 / 3600,
+            "K": 40,
+            "eta_high": 30,
+            "p_crit": 37.45,
+            "v_free": 120,
+            "a": 1.4,
+            "q_capacity": 2400,
+            "r": 0,
+            "beta": 0,
+            "gamma": 1,
+        }
+        return cast(MetanetParams, {key: np.full(num_segments, value) for key, value in defaults.items()})

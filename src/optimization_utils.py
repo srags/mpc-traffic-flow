@@ -14,7 +14,7 @@ from pyomo.environ import (
     Constraint,
     ConstraintList,
 )
-from param_loader import METANET_Params
+from param_loader import load_metanet_params
 import pyomo.environ as pyo
 from dataclasses import dataclass, asdict, field
 from sim_types import *
@@ -305,7 +305,7 @@ def metanet_param_fit(
 
     # Parameters to estimate
     if warmstart is not None:
-        params = METANET_Params(path=warmstart, num_segments=num_calibrated_segments).get_params()
+        params = load_metanet_params(path=warmstart, num_segments=num_calibrated_segments)
 
         model.eta_high = cast(IndexedVar, Var(model.i, bounds=(10.0, 90.0)))
         model.tau = cast(IndexedVar, Var(model.i, bounds=(10.0 / 3600, 60.0 / 3600)))
@@ -637,7 +637,7 @@ def metanet_param_fit(
         )
         # Add smoothness constraint to params from prev_param_path
         if prev_param_path is not None:
-            prev_params = METANET_Params(path=prev_param_path, num_segments=num_calibrated_segments).get_params()
+            prev_params = load_metanet_params(path=prev_param_path, num_segments=num_calibrated_segments)
             for i in m.i:
                 loss_fn += 10.0 * ((m.eta_high[i] - prev_params["eta_high"][i]) / 90.0) ** 2
                 loss_fn += 10.0 * ((m.tau[i] - prev_params["tau"][i]) / (60.0 / 3600)) ** 2
@@ -791,7 +791,7 @@ def metanet_param_fit_robust(
 
     # Shared parameters to estimate (same as your metanet_param_fit)
     if warmstart is not None:
-        params = METANET_Params(path=warmstart, num_segments=num_calibrated_segments).get_params()
+        params = load_metanet_params(path=warmstart, num_segments=num_calibrated_segments)
 
         m.eta_high = cast(IndexedVar, Var(m.i, bounds=(10.0, 90.0)))
         m.tau = cast(IndexedVar, Var(m.i, bounds=(10.0 / 3600, 60.0 / 3600)))
@@ -995,7 +995,7 @@ def metanet_param_fit_robust(
         )
         # Add smoothness constraint to params from prev_param_path
         if prev_param_path is not None:
-            prev_params = METANET_Params(path=prev_param_path, num_segments=num_calibrated_segments).get_params()
+            prev_params = load_metanet_params(path=prev_param_path, num_segments=num_calibrated_segments)
             for i in mm.i:
                 loss_fn += 10.0 * ((mm.eta_high[i] - prev_params["eta_high"][i]) / 90.0) ** 2
                 loss_fn += 10.0 * ((mm.tau[i] - prev_params["tau"][i]) / (60.0 / 3600)) ** 2

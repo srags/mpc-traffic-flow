@@ -1,6 +1,6 @@
 import numpy as np
 from traffic_sim import METANET_Simulator
-from param_loader import METANET_Params
+from param_loader import load_metanet_params
 import csv
 import plotting
 

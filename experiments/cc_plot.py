@@ -11,7 +11,7 @@ from sim_types import *
 # Setup freeway info
 from data_loader import Freeway
 
-freeway = Freeway(freeway="i24", date="11_28", L=0.4, num_segments=14, time_step=10/3600, time_steps=360, start_time=0.0)
+freeway = Freeway(freeway="i24", date="11_30", L=0.4, num_segments=14, time_step=10/3600, time_steps=360, start_time=0.0)
 start_time_step = freeway.start_time_step
 
 # Read in the data
