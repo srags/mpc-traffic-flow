@@ -23,7 +23,7 @@ REPO_ROOT = SITE_ROOT.parent
 RESULTS_ROOT = (REPO_ROOT / "results").resolve()
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from traffic_flow.results.policies import load_result  # noqa: E402
+from traffic_flow.results.io import load_result  # noqa: E402
 from traffic_flow.types import RunResult  # noqa: E402
 
 # Wall-clock origin is not saved in run.npz. Other datasets use elapsed time.

@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from traffic_flow import load_params, load_result, load_scenario, optimize, save_result
 from traffic_flow.config import CalRef, CalSource, InitMode, MPCConfig, Study, default_mpc_config
-from traffic_flow.results.policies import run_dir
+from traffic_flow.results.io import run_dir
 
 
 def argument_parser() -> argparse.ArgumentParser:

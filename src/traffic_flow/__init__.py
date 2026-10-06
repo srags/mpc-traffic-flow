@@ -2,7 +2,7 @@
 
 from .inputs.scenario import load_scenario, load_params
 from .pipeline import calibrate, optimize, evaluate
-from .results.policies import save_result, load_result
+from .results.io import save_result, load_result
 
 __all__ = [
     "load_scenario",

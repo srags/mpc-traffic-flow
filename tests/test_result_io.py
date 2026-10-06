@@ -15,7 +15,8 @@ from traffic_flow.config import CalRef, InitMode, MPCConfig, ScenarioConfig, Stu
 from traffic_flow.inputs.scenario import Scenario, prepare_traffic_data
 from traffic_flow.model.parameters import default_metanet_params
 from traffic_flow.types import OptimizationResult, RunResult, SimulationResult
-import traffic_flow.results.policies as policies
+import traffic_flow.paths as paths
+import traffic_flow.results.io as result_io
 
 
 @pytest.fixture
@@ -53,7 +54,7 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
         assert kwargs.get("allow_pickle") is False
         return real_load(file, *args, **kwargs)
 
-    monkeypatch.setattr(policies.np, "load", read_bundle_only)
+    monkeypatch.setattr(result_io.np, "load", read_bundle_only)
     restored = load_result(directory)
     # Compare both the restored result and the input, which saving must not mutate.
     for actual in (restored, run_result):
@@ -90,7 +91,7 @@ def test_failed_save_keeps_previous_bundle(tmp_path, monkeypatch, run_result):
         stream.write(b"partial archive")
         raise OSError("simulated write failure")
 
-    monkeypatch.setattr(policies.np, "savez_compressed", fail_write)
+    monkeypatch.setattr(result_io.np, "savez_compressed", fail_write)
     with pytest.raises(OSError, match="simulated write failure"):
         save_result(run_result, tmp_path)
     assert path.read_bytes() == before
@@ -98,13 +99,15 @@ def test_failed_save_keeps_previous_bundle(tmp_path, monkeypatch, run_result):
 
 
 def test_settings_separate_runs_and_lookup_finds_the_right_one(tmp_path, monkeypatch, run_result):
-    monkeypatch.setattr(policies, "REPO_DIR", tmp_path)
+    monkeypatch.setattr(paths, "REPO_DIR", tmp_path)
     calibration = CalRef("custom_fit", interval=3)
     study = Study.SAFETY_SWEEP
     spec, config = run_result.scenario.spec, run_result.config
-    first = policies.run_dir(spec, calibration=calibration, config=config, study=study)
+    first = paths.run_dir(spec, calibration=calibration, config=config, study=study)
     assert first.parent == tmp_path / "results/test/test_day/custom_fit/control_h_3/safety_sweep/runs"
-    assert policies.run_dir(
+    # Captured before moving the builders: existing destinations must not change.
+    assert first.name == "lb_40_hold_1_temp_0.7_spat_25__48eeb929c24c8dae"
+    assert paths.run_dir(
         spec, calibration=calibration, study=study,
         config=replace(config, verbose=True, tee=True),
     ) == first
@@ -113,22 +116,46 @@ def test_settings_separate_runs_and_lookup_finds_the_right_one(tmp_path, monkeyp
         replace(config, pred_horizon=4),
         replace(config, initialize_vsl=config.initialize_vsl + 1),
     ):
-        assert policies.run_dir(spec, calibration=calibration, config=settings, study=study) != first
+        assert paths.run_dir(spec, calibration=calibration, config=settings, study=study) != first
+    assert paths.find_run_dirs(spec.freeway, spec.date, calibration=calibration, study=study) == []
     assert list(tmp_path.iterdir()) == []  # Resolving paths does not create anything.
 
     other = replace(run_result, config=replace(config, speed_lb=60.))
-    second = policies.run_dir(spec, calibration=calibration, config=other.config, study=study)
+    second = paths.run_dir(spec, calibration=calibration, config=other.config, study=study)
     assert second != first
     save_result(run_result, first)
     save_result(other, second)
     # An identical run in another study must not leak into this lookup.
-    save_result(run_result, policies.run_dir(spec, calibration=calibration, config=config))
-    selected = policies.load_runs(
+    save_result(run_result, paths.run_dir(spec, calibration=calibration, config=config))
+    (first.parent / "unfinished").mkdir()
+
+    def no_array_loading(*args, **kwargs):
+        pytest.fail("Finding run directories must not load their arrays")
+
+    with monkeypatch.context() as discovery_only:
+        discovery_only.setattr(np, "load", no_array_loading)
+        assert paths.find_run_dirs(
+            spec.freeway, spec.date, calibration=calibration, study=study,
+        ) == sorted([first, second])
+        assert paths.find_run_dirs(
+            spec.freeway, "missing", calibration=calibration, study=study,
+        ) == []
+
+    selected = result_io.load_runs(
         spec.freeway, spec.date, calibration=calibration, study=study,
         where=lambda settings: settings.speed_lb == config.speed_lb,
     )
     assert len(selected) == 1
     np.testing.assert_array_equal(selected[0].optimization.vsl, run_result.optimization.vsl)
     assert selected[0].config.pred_horizon == config.pred_horizon
-    assert len(policies.load_runs(spec.freeway, spec.date, calibration=calibration, study=study)) == 2
-    assert policies.load_runs(spec.freeway, "missing", calibration=calibration, study=study) == []
+    assert len(result_io.load_runs(spec.freeway, spec.date, calibration=calibration, study=study)) == 2
+    assert result_io.load_runs(spec.freeway, "missing", calibration=calibration, study=study) == []
+
+    # A misplaced bundle is an input error, even if the filter would exclude it.
+    wrong_scenario = replace(run_result.scenario, spec=replace(spec, date="wrong_day"))
+    save_result(replace(run_result, scenario=wrong_scenario), first)
+    with pytest.raises(ValueError, match="Scenario metadata disagrees with directory"):
+        result_io.load_runs(
+            spec.freeway, spec.date, calibration=calibration, study=study,
+            where=lambda settings: False,
+        )

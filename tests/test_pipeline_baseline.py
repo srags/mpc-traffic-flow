@@ -147,7 +147,7 @@ def test_synthetic_reports_preserve_original_replay():
     from traffic_flow.config import SyntheticConfig
     from traffic_flow.model.parameters import default_metanet_params
     from traffic_flow.model.simulation import METANET_Simulator
-    from traffic_flow.results.synthetic import load_synthetic_results
+    from traffic_flow.results.synthetic import SyntheticResult, load_synthetic_results
     from traffic_flow.types import MetanetState
 
     policy_dir = ROOT / "results_bu/synthetic_10km/demand"
@@ -161,6 +161,7 @@ def test_synthetic_reports_preserve_original_replay():
     params = default_metanet_params(25)
     results = load_synthetic_results(peaks, policy_dir)
     assert [result.peak for result in results] == list(peaks)
+    assert all(isinstance(result, SyntheticResult) for result in results)
 
     for peak, path, result in zip(peaks, paths, results):
         # Independent transcription of the original experiment, not the new
@@ -205,3 +206,107 @@ def test_synthetic_missing_or_malformed_policy(tmp_path):
     np.savetxt(policy, np.full((2, 25), 150.0), delimiter=",")
     with pytest.raises(ValueError, match="expected VSL shape"):
         load_synthetic_results([5500], tmp_path, skip_missing=True)
+
+
+def test_cc_report_keeps_metrics_and_printed_summary(monkeypatch, capsys):
+    """Moving cc.py must preserve report values, without plotting or solving."""
+    from unittest.mock import Mock
+
+    from traffic_flow.config import ScenarioConfig
+    from traffic_flow.inputs.scenario import Scenario
+    from traffic_flow.model.parameters import default_metanet_params
+    from traffic_flow.results.analysis import cc_report
+    from traffic_flow.types import OptimizationResult, SimulationResult, TrafficData
+
+    spec = ScenarioConfig("test", "day", 1., 2, 0.01, 2)
+    density = np.array([[10., 20.], [10., 20.]])
+    velocity = np.array([[50., 99.], [50., 99.]])
+    lanes = np.array([2., 3.])
+    traffic = TrafficData(
+        density, density * velocity * lanes, velocity, lanes,
+        np.full(2, 5000.), np.full(2, 20.), density[0].copy(), velocity[0].copy(),
+    )
+    scenario = Scenario(spec, traffic)
+    params = default_metanet_params(2)
+    params["v_free"] = np.full(2, 100.)
+    # The terminal row and diagnostic TTS deliberately differ: neither belongs
+    # in the fit comparison or the saved policy's modeled-origin CC calculation.
+    diagnostic = SimulationResult(
+        np.vstack((density, [999., 999.])),
+        np.vstack((velocity, [999., 999.])), np.zeros((3, 1)), 999.,
+    )
+    result = OptimizationResult(
+        np.array([[120., 100.], [80., 90.]]),
+        diagnostic._replace(total_travel_time=12.),
+        diagnostic._replace(velocity=np.array([[80., 100.], [80., 100.], [999., 999.]]),
+                            total_travel_time=7.),
+    )
+    # Protect supplied observations, parameters, policy and saved histories.
+    for array in (*traffic, *params.values(), result.vsl, *result.baseline,
+                  *result.controlled, *diagnostic):
+        if isinstance(array, np.ndarray):
+            array.flags.writeable = False
+    simulate = Mock(return_value=diagnostic)
+    monkeypatch.setattr("traffic_flow.pipeline.simulate_scenario", simulate)
+
+    report = cc_report(scenario, params, result)
+
+    simulate.assert_called_once_with(traffic, params, T=0.01, l=1., steps=2, real_data=True)
+    assert report.result is result
+    np.testing.assert_allclose((report.free_flow_ttt, report.delay, report.controlled_delay),
+                               (2., 10., 5.), rtol=RTOL, atol=ATOL)
+    np.testing.assert_array_equal(report.display_vsl, [[150., 100.], [80., 90.]])
+    np.testing.assert_array_equal(result.vsl, [[120., 100.], [80., 90.]])
+    np.testing.assert_allclose(report.observed_delay, [[0.6, 0.6], [1 / 165, 1 / 165]],
+                               rtol=RTOL, atol=ATOL)
+    np.testing.assert_allclose(report.pct_decrease, [[75., 75.], [0., 0.]], rtol=RTOL, atol=ATOL)
+    assert report.fit_rows == {
+        "Velocity": "MAPE 0.00%, RMSE 0.00",
+        "Density": "MAPE 0.00%, RMSE 0.00",
+        "Flow": "MAPE 0.00%, RMSE 0.00",
+        "Travel Time": "1.60 veh-hr vs 1.60 veh-hr (MAPE 0.00%)",
+    }
+    assert report.cc_rows == {
+        "Total free flow travel time": "2.00 veh-hrs",
+        "Controllable congestion": "50.00%",
+        "Delay (ground truth)": "0.01 min - 0.60 min",
+        "Pct decrease": "0.00% - 75.00%",
+    }
+
+    from traffic_flow.results.analysis import print_cc_report
+
+    print_cc_report(report)
+    output = capsys.readouterr().out
+    assert output.index("No Control") < output.index("Optimized VSLs")
+    for label, value in (*report.fit_rows.items(), *report.cc_rows.items()):
+        assert label in output and value in output
+
+
+def test_virtual_trajectory_analysis_preserves_existing_values():
+    """Freeze the current positive-speed integration before moving its module."""
+    from traffic_flow.results.analysis import get_virtual_trajectory, vt_travel_time_stats
+
+    speed = np.array([
+        [30., 60., 90., 30., 60., 90., 30., 60.],
+        [60., 90., 30., 60., 90., 30., 60., 90.],
+        [90., 30., 60., 90., 30., 60., 90., 30.],
+    ])
+    speed.flags.writeable = False
+    # Captured from trajectories.py before consolidation; preserve the repeated
+    # starting point and boundary behavior rather than changing the algorithm.
+    for direction, times, positions in (
+        (1, [2., 3., 3.25, 3.25, 4., 5.], [0., 1., 1.25, 1.25, 2., 2.5]),
+        (-1, [2., 2.5, 3., 3.25, 3.25, 3.5, 4., 4.5],
+         [2.5, 2., 1.5, 1.25, 1.25, 1., 0.5, 0.]),
+    ):
+        actual = get_virtual_trajectory(speed, 3.25, 1.25, 30., 0.5, direction=direction)
+        np.testing.assert_allclose(actual, (times, positions), rtol=RTOL, atol=ATOL)
+
+    extended = np.tile(speed, (1, 4))
+    extended.flags.writeable = False
+    times = vt_travel_time_stats(extended, time_step=10 / 3600, num_samples=4)
+    assert times is not None, "vt_travel_time_stats must return vt_times outside the plotting branch"
+    # The legacy integrator uses d_time=4 and d_space=0.5 internally, despite
+    # converting travel time with the caller's time_step. This move keeps that.
+    np.testing.assert_allclose(times, [3.666583333333333, 3.444444444444444,
+                                      1.722222222222222, 0.], rtol=RTOL, atol=ATOL)

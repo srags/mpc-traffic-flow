@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import StudyChoice, MPCConfig, ScenarioConfig, CalRef
-from ..paths import REPO_DIR
+from ..paths import REPO_DIR, find_run_dirs
 from ..types import (
     MetanetParams, OptimizationResult, RunResult,
     SimulationResult, TrafficData
@@ -15,7 +15,6 @@ from .console import colored
 from ..inputs.scenario import Scenario
 
 from tempfile import NamedTemporaryFile
-from hashlib import sha256
 
 def save_result(result: RunResult, output_dir: Path) -> Path:
     """Save one complete run, replacing an existing bundle only after success."""
@@ -135,82 +134,23 @@ def load_result(output_dir: Path) -> RunResult:
         )
 
 
-def _runs_dir(dataset: str, date: str, *, calibration: CalRef, study: StudyChoice = None) -> Path:
-    directory = REPO_DIR / "results" / dataset / f"{dataset}_{date}" / calibration.source
-    if calibration.interval is not None: directory /= f"control_h_{calibration.interval}"
-    return directory / (study or "") / "runs"
-
-
-def run_dir(
-    spec: ScenarioConfig,
-    calibration: CalRef,
-    config: MPCConfig,
-    study: StudyChoice = None,
-) -> Path:
-    """Resolve a settings-specific destination without creating it."""
-    identity = _run_id(spec, config)
-
-    labels = {
-        "lb": config.speed_lb,
-        "hold": config.hold_length,
-        "temp": config.safety_temporal,
-        "spat": config.safety_spatial,
-    }
-    label = "_".join(
-        f"{name}_{float(value or 0):g}"
-        for name, value in labels.items()
-        if value is not None
-    )
-    return _runs_dir(spec.freeway, spec.date, calibration=calibration, study=study) / f"{label}__{identity}"
-
-
 def load_runs(
     dataset: str, date: str,
     calibration: CalRef,
     study: StudyChoice = None,
     where: Callable[[MPCConfig], bool] | None = None,
 ) -> list[RunResult]:
-    """Load matching bundles from either the old or new directory naming."""
-    directory = _runs_dir(dataset, date, calibration=calibration, study=study)
+    """Load saved runs matching the requested configuration."""
     results = []
 
-    for path in sorted(directory.glob("*/run.npz")):
-        result = load_result(path.parent)
+    for directory in find_run_dirs(dataset, date, calibration=calibration, study=study,):
+        result = load_result(directory)
         spec = result.scenario.spec
         if (spec.freeway, spec.date) != (dataset, date):
-            raise ValueError(f"Scenario metadata disagrees with directory: {path}")
-        if where is None or where(result.config): results.append(result)
+            raise ValueError(f"Scenario metadata disagrees with directory: {directory / 'run.npz'}")
+
+        if where is None or where(result.config):
+            results.append(result)
 
     return results
 
-
-
-def _run_id(spec: ScenarioConfig, config: MPCConfig) -> str:
-    """Identify numerical settings independently of logging and array layout."""
-    def normalize(value):
-        if isinstance(value, np.ndarray):
-            if value.dtype.hasobject: raise ValueError("Run settings cannot contain object arrays.")
-            return {"shape": list(value.shape), "values": normalize(value.tolist())}
-        if isinstance(value, np.generic):
-            value = value.item()
-        if isinstance(value, float):
-            if not np.isfinite(value): raise ValueError("Run settings must be finite.")
-            # Treat equivalent numbers consistently: 0, 0.0 and -0.0.
-            return int(value) if value.is_integer() else value
-        if isinstance(value, (tuple, list)):
-            return [normalize(item) for item in value]
-        if isinstance(value, dict):
-            return {key: normalize(item) for key, item in value.items()}
-        return value
-
-    settings = {field.name: getattr(config, field.name)
-        for field in fields(config) if field.name not in {"verbose", "tee"}
-    }
-    identity = {"version": 1, "scenario": asdict(spec), "config": settings}
-    encoded = json.dumps(
-        normalize(identity),
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return sha256(encoded).hexdigest()[:16]

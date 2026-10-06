@@ -8,7 +8,7 @@ from traffic_flow.paths import REPO_DIR
 
 from traffic_flow.config import CalSource, InitMode, StudyChoice, CalRef, Study, default_mpc_config
 from traffic_flow.results.console import colored
-from traffic_flow.results.policies import run_dir
+from traffic_flow.paths import run_dir
 from traffic_flow import load_params, load_scenario, optimize, save_result
 
 def cc_optimize(dataset: str, date: str, calibration: CalRef, study: StudyChoice, **kwargs):

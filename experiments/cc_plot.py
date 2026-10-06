@@ -4,11 +4,11 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from traffic_flow.results.analysis import cc_report
+from traffic_flow.results.analysis import cc_report, print_cc_report
 from traffic_flow.config import CalRef, CalSource, InitMode, Study
-from traffic_flow.results.policies import load_runs
+from traffic_flow.results.io import load_runs
 from traffic_flow.paths import REPO_DIR
-from traffic_flow.results.cc import print_cc_report, save_cc_plots
+from traffic_flow.results.plots import save_cc_plots
 from traffic_flow.results.console import colored
 
 from traffic_flow.types import RunResult
