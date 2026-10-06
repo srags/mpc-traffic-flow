@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the local traffic explorer and its read-only scenario API."""
+"""Serve the local viewer from saved run bundles; no simulations or data reads."""
 
 from __future__ import annotations
 
@@ -7,266 +7,174 @@ import argparse
 import json
 import sys
 import webbrowser
+from dataclasses import fields
 from functools import lru_cache
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Timer
 from urllib.parse import parse_qs, urlparse
+from zipfile import BadZipFile
 
 import numpy as np
 
 SITE_ROOT = Path(__file__).resolve().parent
 REPO_ROOT = SITE_ROOT.parent
 RESULTS_ROOT = (REPO_ROOT / "results").resolve()
-DATA_ROOT = (REPO_ROOT / "data").resolve()
-SRC_ROOT = REPO_ROOT / "src"
-sys.path.insert(0, str(SRC_ROOT))
+sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from sim_types import MetanetState  # noqa: E402
-from traffic_sim import METANET_Simulator  # noqa: E402
+from traffic_flow.results.policies import load_result  # noqa: E402
+from traffic_flow.types import RunResult  # noqa: E402
 
-NETWORKS = {
-    "i24": {"segment_length_km": 0.4, "time_step_hours": 10 / 3600, "start_hour": 7.5},
-}
-
-
-def _smooth_two(values: np.ndarray) -> np.ndarray:
-    """Equivalent to uniform_filter1d(values, 2, mode='nearest')."""
-    return (np.concatenate(([values[0]], values[:-1])) + values) / 2
-
-
-def _optional_array(folder: Path, name: str, fallback: np.ndarray) -> np.ndarray:
-    path = folder / name
-    return np.load(path, allow_pickle=False) if path.exists() else fallback.copy()
-
-
-def _static_params(folder: Path, segments: int) -> dict[str, np.ndarray]:
-    zeros = np.zeros(segments, dtype=float)
-    ones = np.ones(segments, dtype=float)
-    return {
-        "tau": np.load(folder / "tau.npy", allow_pickle=False),
-        "K": np.load(folder / "K.npy", allow_pickle=False),
-        "eta_high": np.load(folder / "eta_high.npy", allow_pickle=False),
-        "p_crit": np.load(folder / "rho_crit.npy", allow_pickle=False),
-        "v_free": np.load(folder / "v_free.npy", allow_pickle=False),
-        "a": np.load(folder / "a.npy", allow_pickle=False),
-        "q_capacity": np.full(segments, 2400.0),
-        "r": _optional_array(folder, "r_inflow_array.npy", zeros),
-        "beta": _optional_array(folder, "beta_array.npy", zeros),
-        "gamma": _optional_array(folder, "gamma_array.npy", ones),
-    }
-
-
-def _dynamic_params(folder: Path, steps: int, segments: int, interval: int) -> dict[str, np.ndarray]:
-    parameter_folders = sorted(
-        (path for path in folder.glob("params_*") if path.is_dir()),
-        key=lambda path: int(path.name.split("_")[-1]),
-    )
-    if not parameter_folders:
-        raise FileNotFoundError(f"No dynamic parameter folders found in {folder}")
-
-    names = {
-        "tau": "tau.npy",
-        "K": "K.npy",
-        "eta_high": "eta_high.npy",
-        "p_crit": "rho_crit.npy",
-        "v_free": "v_free.npy",
-        "a": "a.npy",
-        "r": "r_inflow_array.npy",
-        "beta": "beta_array.npy",
-        "gamma": "gamma_array.npy",
-    }
-    defaults = {"r": 0.0, "beta": 0.0, "gamma": 1.0}
-    params: dict[str, np.ndarray] = {}
-    for key, filename in names.items():
-        chunks = []
-        for parameter_folder in parameter_folders:
-            path = parameter_folder / filename
-            values = (
-                np.load(path, allow_pickle=False).reshape(-1)
-                if path.exists()
-                else np.full(segments, defaults[key])
-            )
-            chunks.append(np.tile(values, (interval, 1)))
-        joined = np.vstack(chunks)
-        if joined.shape[0] < steps:
-            joined = np.pad(joined, ((0, steps - joined.shape[0]), (0, 0)), mode="edge")
-        params[key] = joined[:steps]
-    params["q_capacity"] = np.full((steps, segments), 2400.0)
-    return params
-
-
-def _scenario_parts(relative: Path) -> tuple[str, str, str, int | None, str]:
-    parts = relative.parts
-    if len(parts) < 5:
-        raise ValueError("Unexpected result path")
-    network, date_folder = parts[0], parts[1]
-    calibration_family, calibration_detail = parts[2], parts[3]
-    if calibration_family == "calibration_dynamic" and calibration_detail.startswith("control_h_"):
-        interval = int(calibration_detail.removeprefix("control_h_"))
-        calibration_id = calibration_family
-    else:
-        interval = None
-        calibration_id = f"{calibration_family}/{calibration_detail}"
-    variant = "/".join(parts[4:-1])
-    return network, date_folder, calibration_id, interval, variant
-
-
-def _pretty_run_name(stem: str) -> str:
-    suffix = stem.removeprefix("optimal_vsl").strip("_")
-    if not suffix:
-        return "Default MPC"
-    return (
-        suffix.replace("temp", "temporal ")
-        .replace("spat", " · spatial ")
-        .replace("_", " ")
-        .strip()
-        .title()
-    )
-
-
-@lru_cache(maxsize=1)
-def discover_scenarios() -> list[dict[str, str]]:
-    scenarios: list[dict[str, str]] = []
-    for path in RESULTS_ROOT.rglob("optimal_vsl*.npy"):
-        relative = path.relative_to(RESULTS_ROOT)
-        try:
-            network, date_folder, calibration_id, interval, variant = _scenario_parts(relative)
-        except (ValueError, IndexError):
-            continue
-        data_folder = DATA_ROOT / network / date_folder
-        if network not in NETWORKS or not (data_folder / "rho_hat.npy").exists():
-            continue
-        calibration = calibration_id if interval is None else f"{calibration_id}/control_h_{interval}"
-        calibration_label = "Static" if interval is None else f"Dynamic {interval}"
-        date = date_folder.removeprefix(f"{network}_").replace("_", "/")
-        run_name = _pretty_run_name(path.stem)
-        scenario_variant = " / ".join(value for value in (variant, run_name) if value)
-        scenarios.append({
-            "id": relative.as_posix(),
-            "label": f"{network.upper().replace('I24', 'I-24')} · {date} · {calibration_label} · {scenario_variant}",
-            "date": date,
-            "calibration": calibration,
-            "variant": scenario_variant,
-        })
-    return sorted(
-        scenarios,
-        key=lambda item: (
-            item["date"] != "11/30",
-            "safety_sweep" in item["variant"],
-            item["date"],
-            item["label"],
-        ),
-    )
+# Wall-clock origin is not saved in run.npz. Other datasets use elapsed time.
+START_HOURS = {"i24": 7.5}
 
 
 def _safe_scenario_path(scenario_id: str) -> Path:
     path = (RESULTS_ROOT / scenario_id).resolve()
-    if RESULTS_ROOT not in path.parents or path.suffix != ".npy" or not path.name.startswith("optimal_vsl"):
+    if Path(scenario_id).is_absolute() or RESULTS_ROOT not in path.parents or path.name != "run.npz":
         raise ValueError("Invalid scenario path")
     if not path.is_file():
         raise FileNotFoundError("Scenario does not exist")
     return path
 
 
-@lru_cache(maxsize=12)
-def load_scenario(scenario_id: str) -> dict[str, object]:
-    result_path = _safe_scenario_path(scenario_id)
-    relative = result_path.relative_to(RESULTS_ROOT)
-    network, date_folder, calibration_id, interval, _ = _scenario_parts(relative)
-    network_info = NETWORKS[network]
-    data_folder = DATA_ROOT / network / date_folder
-
-    density_raw = np.clip(np.load(data_folder / "rho_hat.npy", allow_pickle=False), 1e-3, None)
-    flow_raw = np.clip(np.load(data_folder / "q_hat.npy", allow_pickle=False), 1e-3, None)
-    lanes = np.load(data_folder / "lane_mapping.npy", allow_pickle=False)[1:-1]
-    velocity_raw = flow_raw / density_raw
-
-    vsl = np.asarray(np.load(result_path, allow_pickle=False), dtype=float)
-    if vsl.ndim != 2:
-        raise ValueError("VSL result must be a two-dimensional time-space array")
-    if vsl.shape[1] != len(lanes) and vsl.shape[0] == len(lanes):
-        vsl = vsl.T
-    if vsl.shape[1] != len(lanes):
-        raise ValueError(f"VSL has {vsl.shape[1]} segments; data has {len(lanes)}")
-
-    steps = min(vsl.shape[0], density_raw.shape[0])
-    segments = len(lanes)
-    vsl = vsl[:steps]
-    initial_density = density_raw[0, 1:-1] / lanes
-    initial_velocity = velocity_raw[0, 1:-1]
-    demand = _smooth_two(flow_raw[:, 0])[:steps]
-    downstream_density = (_smooth_two(density_raw[:, -1]) / lanes[-1])[:steps]
-
-    if interval is None:
-        params = _static_params(data_folder / calibration_id, segments)
-    else:
-        params = _dynamic_params(data_folder / calibration_id / f"control_h_{interval}", steps, segments, interval)
-
-    simulator = METANET_Simulator(
-        T=float(network_info["time_step_hours"]),
-        l=float(network_info["segment_length_km"]),
-        params=params,
-        lanes={index: float(count) for index, count in enumerate(lanes)},
-        real_data=False,
-    )
-    baseline_density, baseline_velocity, baseline_queue, _ = simulator.run_with_history(
-        demand=demand,
-        downstream_density=downstream_density,
-        init_traffic_state=MetanetState(initial_density, initial_velocity, float(demand[0]), 0.0),
-        vsl_speeds=None,
-    )
-    density, velocity, queue, travel_time = simulator.run_with_history(
-        demand=demand,
-        downstream_density=downstream_density,
-        init_traffic_state=MetanetState(initial_density, initial_velocity, float(demand[0]), 0.0),
-        vsl_speeds=vsl,
-    )
-    density = density[:-1]
-    velocity = velocity[:-1]
-    queue_values = queue[:-1, 0]
-    baseline_density = baseline_density[:-1]
-    baseline_velocity = baseline_velocity[:-1]
-    baseline_queue_values = baseline_queue[:-1, 0]
-
-    config_path = result_path.with_name(f"{result_path.stem}_config.json")
-    config = json.loads(config_path.read_text()) if config_path.exists() else {}
-    summary = next(item for item in discover_scenarios() if item["id"] == scenario_id)
-    velocity_max = max(120.0, float(np.ceil(max(np.max(velocity), np.max(baseline_velocity)) / 10) * 10))
-    density_max = max(80.0, float(np.ceil(max(np.max(density), np.max(baseline_density)) / 10) * 10))
-
+def _scenario_summary(run: RunResult, relative: Path) -> dict[str, str]:
+    spec, config = run.scenario.spec, run.config
+    # The file supplies geometry/settings; folders are only display labels.
+    parts = relative.parts
+    context = "/".join(parts[2:-3]) if len(parts) >= 6 else "saved run"
+    run_id = relative.parent.name.rsplit("__", 1)[-1][:8]
+    options = [f"min {config.speed_lb:g}", f"hold {config.hold_length}"]
+    if config.safety_temporal is not None:
+        options.append(f"temporal {config.safety_temporal:g}")
+    if config.safety_spatial is not None:
+        options.append(f"spatial {config.safety_spatial:g}")
+    if config.initialize_vsl is not None:
+        options.append("warm start")
+    initialization = config.init_fixed
+    if initialization is not None:
+        choices = initialization if isinstance(initialization, (tuple, list)) else (initialization,)
+        options.append("init " + "/".join(str(value) for value in choices))
+    variant = " · ".join(options)
+    date = spec.date.replace("_", "/")
+    network = spec.freeway.upper().replace("I24", "I-24")
     return {
-        "scenario": summary,
-        "velocity": np.round(velocity, 3).tolist(),
-        "density": np.round(density, 3).tolist(),
-        "vsl": np.round(vsl, 3).tolist(),
-        "queue": np.round(queue_values, 3).tolist(),
-        "baseline": {
-            "velocity": np.round(baseline_velocity, 3).tolist(),
-            "density": np.round(baseline_density, 3).tolist(),
-            "queue": np.round(baseline_queue_values, 3).tolist(),
-        },
+        "id": relative.as_posix(),
+        "label": f"{network} · {date} · {context} · {variant} · {run_id}",
+        "date": date,
+        "calibration": context,
+        "variant": variant,
+        "network": network,
+    }
+
+
+def _travel_time_curve(run: RunResult) -> dict[str, object]:
+    """TTT of the revealed controlled prefix plus the remaining baseline.
+
+    Use full-precision saved states, including queue and the terminal row.
+    The terminal contribution switches with the final displayed interval, so
+    cutoff 0/T exactly matches the saved baseline/controlled total. This is
+    an accounting of the mixed display, not a new partial-policy simulation.
+    """
+    spec, traffic = run.scenario.spec, run.scenario.traffic
+    baseline, controlled = run.optimization.baseline, run.optimization.controlled
+    costs = []
+    for simulation in (baseline, controlled):
+        cost = spec.time_step * (
+            spec.L * (simulation.density @ traffic.lanes) + simulation.queue.reshape(-1)
+        )
+        if not np.isclose(cost.sum(), simulation.total_travel_time, rtol=1e-9, atol=1e-8):
+            raise ValueError("Saved travel time disagrees with the saved density/queue histories")
+        costs.append(cost)
+    difference = costs[1] - costs[0]
+    increments = difference[:-1].copy()
+    increments[-1] += difference[-1]
+    curve = baseline.total_travel_time + np.r_[0.0, np.cumsum(increments)]
+    curve[-1] = controlled.total_travel_time  # Remove floating-point summation drift only.
+    return {
+        "baseline": baseline.total_travel_time,
+        "controlled": controlled.total_travel_time,
+        "byCutoff": curve.tolist(),
+    }
+
+
+def load_scenario(scenario_id: str) -> dict[str, object]:
+    path = _safe_scenario_path(scenario_id)
+    stamp = path.stat()
+    return _load_scenario(scenario_id, stamp.st_mtime_ns, stamp.st_size, stamp.st_ino)
+
+
+@lru_cache(maxsize=12)
+def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) -> dict[str, object]:
+    # Fingerprinting invalidates cached data when save_result replaces a bundle.
+    path = _safe_scenario_path(scenario_id)
+    run = load_result(path.parent)
+    spec, traffic = run.scenario.spec, run.scenario.traffic
+    result = run.optimization
+    steps, segments = spec.time_steps, spec.num_segments
+    if steps < 1 or segments < 1 or not all(
+        np.isfinite(value) and value > 0 for value in (spec.time_step, spec.L)
+    ) or not np.isfinite(spec.start_time):
+        raise ValueError("Invalid scenario geometry or timing")
+    if traffic.lanes.shape != (segments,) or not np.isfinite(traffic.lanes).all() or np.any(traffic.lanes <= 0):
+        raise ValueError("Invalid saved lane counts")
+    if result.vsl.shape != (steps, segments) or not np.isfinite(result.vsl).all():
+        raise ValueError("Saved VSL dimensions/values do not match the scenario")
+
+    for simulation in (result.baseline, result.controlled):
+        if simulation.density.shape != (steps + 1, segments) or simulation.velocity.shape != (steps + 1, segments):
+            raise ValueError("Saved histories must include one terminal row")
+        if simulation.queue.shape not in ((steps + 1,), (steps + 1, 1)):
+            raise ValueError("Saved queue dimensions do not match the scenario")
+        if not all(np.isfinite(value).all() for value in simulation):
+            raise ValueError("Saved results contain non-finite values")
+
+    def display(simulation):
+        return {
+            "velocity": np.round(simulation.velocity[:-1], 3).tolist(),
+            "density": np.round(simulation.density[:-1], 3).tolist(),
+            "queue": np.round(simulation.queue.reshape(-1)[:-1], 3).tolist(),
+        }
+
+    config = {field.name: getattr(run.config, field.name)
+              for field in fields(run.config) if field.name != "initialize_vsl"}
+    config["warm_start"] = run.config.initialize_vsl is not None
+    velocity_max = max(120.0, float(np.ceil(max(
+        result.controlled.velocity.max(), result.baseline.velocity.max()
+    ) / 10) * 10))
+    density_max = max(80.0, float(np.ceil(max(
+        result.controlled.density.max(), result.baseline.density.max()
+    ) / 10) * 10))
+    start_hour = START_HOURS.get(spec.freeway)
+    return {
+        "scenario": _scenario_summary(run, path.relative_to(RESULTS_ROOT)),
+        **display(result.controlled),
+        "vsl": np.round(result.vsl, 3).tolist(),
+        "baseline": display(result.baseline),
+        "travelTime": _travel_time_curve(run),
         "config": config,
         "metadata": {
             "timeSteps": steps,
-            "timeStepSeconds": float(network_info["time_step_hours"]) * 3600,
+            "timeStepSeconds": spec.time_step * 3600,
             "segments": segments,
-            "segmentLengthKm": float(network_info["segment_length_km"]),
-            "startHour": float(network_info["start_hour"]),
-            "lanes": np.asarray(lanes, dtype=float).tolist(),
+            "segmentLengthKm": spec.L,
+            "startHour": None if start_hour is None else start_hour + spec.start_time,
+            "lanes": traffic.lanes.tolist(),
         },
-        "stats": {
-            "travelTime": round(float(travel_time), 4),
-            "meanVelocity": round(float(np.mean(velocity)), 4),
-            "peakDensity": round(float(np.max(density)), 4),
-            "peakQueue": round(float(np.max(queue_values)), 4),
-        },
-        "scales": {
-            "velocity": [0.0, velocity_max],
-            "density": [0.0, density_max],
-        },
+        "scales": {"velocity": [0.0, velocity_max], "density": [0.0, density_max]},
     }
+
+
+def discover_scenarios() -> list[dict[str, str]]:
+    scenarios = []
+    for path in sorted(RESULTS_ROOT.rglob("run.npz")):
+        try:
+            payload = load_scenario(path.relative_to(RESULTS_ROOT).as_posix())
+            scenarios.append(payload["scenario"])
+        except (ValueError, OSError, KeyError, TypeError, BadZipFile, EOFError) as error:
+            print(f"[traffic-explorer] Skipping {path}: {error}")
+    return sorted(scenarios, key=lambda item: (item["date"], item["label"]))
 
 
 class ScenarioHandler(SimpleHTTPRequestHandler):
@@ -304,7 +212,6 @@ class ScenarioHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path == "/api/scenarios":
-                discover_scenarios.cache_clear()
                 self._json({"scenarios": discover_scenarios()})
                 return
             if parsed.path == "/api/scenario":
@@ -335,9 +242,12 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--open", action="store_true", help="Open the explorer in a browser")
     args = parser.parse_args()
-    server = ThreadingHTTPServer((args.host, args.port), ScenarioHandler)
+    try:
+        server = ThreadingHTTPServer((args.host, args.port), ScenarioHandler)
+    except OSError as error:
+        parser.error(f"{error}. Try another port, e.g. --port 8001")
     browser_host = "localhost" if args.host in {"127.0.0.1", "0.0.0.0"} else args.host
-    url = f"http://{browser_host}:{args.port}"
+    url = f"http://{browser_host}:{server.server_port}"
     print(f"Traffic explorer: {url}", flush=True)
     if args.open:
         Timer(0.5, lambda: webbrowser.open(url)).start()

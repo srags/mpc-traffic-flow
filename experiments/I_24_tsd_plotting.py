@@ -22,15 +22,15 @@ import matplotlib as mpl
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
-from viz import Plotter
+from traffic_flow.results.plots import Plotter
 
-from paths import DEFAULT_CALIBRATION           # noqa: E402
-from paths import REPO_DIR
-from archive.cc_analysis import (                    # noqa: E402
+from traffic_flow.config import CalSource
+from traffic_flow.paths import REPO_DIR
+from traffic_flow.results.i24 import (                    # noqa: E402
     L, time_step,
     load_day_data, get_ff_tts, format_date_label,
 )
-from traffic_sim import METANET_Simulator # noqa: E402
+from traffic_flow.model.simulation import METANET_Simulator # noqa: E402
 
 SAVE_PATH = REPO_DIR / "figs" / "i24_tsd.png"
 
@@ -50,7 +50,7 @@ def run_day(date):
     sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=day["lane_dict"], real_data=True)
     _, v_sim, _, tts_sim = sim.run_with_history(day["data_inflow"], day["ds_density_norm"], day["init_state"])
 
-    vsl_path = REPO_DIR / "results" / "i24" / f"i24_{date}" / DEFAULT_CALIBRATION / "optimal_vsl.npy"
+    vsl_path = REPO_DIR / "results" / "i24" / f"i24_{date}" / CalSource.FIXED_RAMPS / "optimal_vsl.npy"
     vsl = np.load(vsl_path)
 
     sim.real_data = False

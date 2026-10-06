@@ -1,0 +1,11 @@
+{
+    "freeway": "i24",
+    "date": "11_30",
+    "L": 0.4,
+    "num_segments": 14,
+    "time_step": 0.002777777777777778,
+    "time_steps": 360,
+    "start_time": 0.0,
+    "calibration_id": "calibration_static/fixed_ramping",
+    "calibration_interval": null
+}

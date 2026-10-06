@@ -11,6 +11,7 @@ const state = {
   roadMotion: [],
   motionFrame: null,
   lastMotionTime: null,
+  requestController: null,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -37,7 +38,7 @@ function colorFor(value, range, metric) {
 
 function formatClock(step) {
   const { metadata } = state.data;
-  const totalSeconds = Math.round(metadata.startHour * 3600 + step * metadata.timeStepSeconds);
+  const totalSeconds = Math.round((metadata.startHour ?? 0) * 3600 + step * metadata.timeStepSeconds);
   const hour = Math.floor(totalSeconds / 3600) % 24;
   const minute = Math.floor(totalSeconds / 60) % 60;
   const second = totalSeconds % 60;
@@ -53,11 +54,15 @@ function showError(message) {
   $("#error-message").textContent = message;
   $("#error-panel").hidden = false;
   $("#loading-panel").hidden = true;
+  $("#visualization").hidden = true;
 }
 
 function setLoading(loading) {
   $("#loading-panel").hidden = !loading;
-  if (loading) $("#error-panel").hidden = true;
+  if (loading) {
+    $("#error-panel").hidden = true;
+    $("#visualization").hidden = true;
+  }
 }
 
 function stopPlayback() {
@@ -71,18 +76,20 @@ function stopPlayback() {
 function startPlayback() {
   if (!state.data) return;
   stopPlayback();
+  if (state.cutoff === state.data.metadata.timeSteps) setCutoff(0);
   state.playing = true;
   $("#play-button").textContent = "Ⅱ";
   $("#play-button").setAttribute("aria-label", "Pause optimization sequence");
   state.timer = window.setInterval(() => {
-    setCutoff(state.cutoff >= state.data.metadata.timeSteps ? 0 : state.cutoff + 1);
+    setCutoff(state.cutoff + 1);
+    if (state.cutoff === state.data.metadata.timeSteps) stopPlayback();
   }, Math.max(24, 180 / state.playbackSpeed));
 }
 
 function setCutoff(cutoff) {
   if (!state.data) return;
   const steps = state.data.metadata.timeSteps;
-  state.cutoff = Math.max(0, Math.min(steps, cutoff));
+  state.cutoff = Math.max(0, Math.min(steps, Math.round(cutoff)));
   state.frame = state.cutoff === 0 ? 0 : Math.min(steps - 1, state.cutoff - 1);
   $("#timeline").value = state.cutoff;
   $("#road-time").textContent = formatClock(state.frame);
@@ -90,11 +97,16 @@ function setCutoff(cutoff) {
   $("#step-code").textContent = state.cutoff === 0
     ? "BASELINE"
     : state.cutoff === steps
-      ? "FULL OPTIMAL"
-      : `OPTIMAL ${state.cutoff} / ${steps}`;
+      ? "CONTROLLED"
+      : `CONTROL ${state.cutoff} / ${steps}`;
   updateRoad();
   updateStats();
   drawHeatmaps();
+  drawTravelChart();
+  for (const canvas of $$("canvas[role='slider']")) {
+    canvas.setAttribute("aria-valuenow", state.cutoff);
+    canvas.setAttribute("aria-valuetext", `Controlled through ${formatClock(state.cutoff)}`);
+  }
 }
 
 function updateRoad() {
@@ -109,7 +121,8 @@ function updateRoad() {
       motion.targetVelocity = velocity;
       motion.targetDensity = density;
     }
-    segment.title = `Segment ${index + 1}: ${velocity.toFixed(1)} km/h, ${density.toFixed(1)} veh/km/lane`;
+    const lanes = Number(state.data.metadata.lanes[index].toFixed(2));
+    segment.title = `Segment ${index + 1} (${lanes} lanes): ${velocity.toFixed(1)} km/h, ${density.toFixed(1)} veh/km/lane`;
   });
   const meanSpeed = velocities.reduce((sum, value) => sum + value, 0) / velocities.length;
   const meanDensity = densities.reduce((sum, value) => sum + value, 0) / densities.length;
@@ -119,31 +132,29 @@ function updateRoad() {
 
 function updateStats() {
   const { data, cutoff } = state;
-  const { timeSteps, segments, lanes, segmentLengthKm, timeStepSeconds } = data.metadata;
+  const { timeSteps, segments } = data.metadata;
   let velocitySum = 0;
-  let weightedDensitySum = 0;
-  let queueSum = 0;
   let peakDensity = 0;
   let peakQueue = 0;
 
   for (let time = 0; time < timeSteps; time += 1) {
     const source = time < cutoff ? data : data.baseline;
     const queue = source.queue[time];
-    queueSum += queue;
     peakQueue = Math.max(peakQueue, queue);
     for (let segment = 0; segment < segments; segment += 1) {
       const velocity = source.velocity[time][segment];
       const density = source.density[time][segment];
       velocitySum += velocity;
-      weightedDensitySum += density * lanes[segment];
       peakDensity = Math.max(peakDensity, density);
     }
   }
 
-  const travelTime = timeStepSeconds / 3600 * (
-    segmentLengthKm * weightedDensitySum + queueSum
-  );
+  // The server uses unrounded histories and includes the saved terminal state.
+  const travelTime = data.travelTime.byCutoff[cutoff];
+  const saved = data.travelTime.baseline - travelTime;
+  const percent = data.travelTime.baseline ? saved / data.travelTime.baseline * 100 : 0;
   $("#travel-time").textContent = travelTime.toFixed(2);
+  $("#travel-readout").textContent = `${travelTime.toFixed(2)} veh-hr · ${Math.abs(saved).toFixed(2)} ${saved >= 0 ? "saved" : "added"} (${Math.abs(percent).toFixed(1)}%)`;
   $("#mean-velocity").textContent = (velocitySum / (timeSteps * segments)).toFixed(1);
   $("#peak-density").textContent = peakDensity.toFixed(1);
   $("#peak-queue").textContent = peakQueue.toFixed(1);
@@ -291,10 +302,82 @@ function drawHeatmaps() {
   drawHeatmap($("#density-heatmap"), state.data.density, state.data.baseline.density, "density", state.data.scales.density);
 }
 
+function drawTravelChart() {
+  if (!state.data) return;
+  const canvas = $("#travel-chart");
+  const width = canvas.getBoundingClientRect().width;
+  if (!width) return;
+  const height = 220;
+  const ratio = window.devicePixelRatio || 1;
+  canvas.width = Math.round(width * ratio);
+  canvas.height = height * ratio;
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  const margin = { left: 64, right: 16, top: 16, bottom: 44 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const { byCutoff, baseline, controlled } = state.data.travelTime;
+  const steps = state.data.metadata.timeSteps;
+  // Fixed axes for the full run: revealing more points never rescales the plot.
+  const low = Math.min(...byCutoff);
+  const high = Math.max(...byCutoff);
+  const padding = Math.max((high - low) * 0.12, Math.abs(high) * 0.005, 0.01);
+  const min = low - padding;
+  const max = high + padding;
+  const x = (cutoff) => margin.left + cutoff / steps * plotWidth;
+  const y = (value) => margin.top + (max - value) / (max - min) * plotHeight;
+
+  ctx.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.lineWidth = 1;
+  for (let tick = 0; tick <= 4; tick += 1) {
+    const value = min + (max - min) * tick / 4;
+    ctx.strokeStyle = "#293137";
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y(value));
+    ctx.lineTo(width - margin.right, y(value));
+    ctx.stroke();
+    ctx.fillStyle = "#98a2a8";
+    ctx.textAlign = "right";
+    ctx.fillText(value.toFixed(1), margin.left - 9, y(value) + 4);
+    ctx.textAlign = "center";
+    const minutes = steps * state.data.metadata.timeStepSeconds / 60 * tick / 4;
+    ctx.fillText(`${Number(minutes.toFixed(1))}`, x(steps * tick / 4), height - 25);
+  }
+  ctx.fillText("Controlled through (min)", margin.left + plotWidth / 2, height - 6);
+
+  ctx.setLineDash([5, 5]);
+  for (const [value, color] of [[baseline, "#98a2a8"], [controlled, "#7d8c44"]]) {
+    ctx.strokeStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(margin.left, y(value));
+    ctx.lineTo(width - margin.right, y(value));
+    ctx.stroke();
+  }
+  ctx.strokeStyle = "#57636b";
+  ctx.beginPath();
+  ctx.moveTo(x(state.cutoff), margin.top);
+  ctx.lineTo(x(state.cutoff), margin.top + plotHeight);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  ctx.strokeStyle = "#d6ef6f";
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  ctx.moveTo(x(0), y(byCutoff[0]));
+  for (let cutoff = 1; cutoff <= state.cutoff; cutoff += 1) {
+    ctx.lineTo(x(cutoff), y(byCutoff[cutoff]));
+  }
+  ctx.stroke();
+  ctx.fillStyle = "#d6ef6f";
+  ctx.beginPath();
+  ctx.arc(x(state.cutoff), y(byCutoff[state.cutoff]), 4, 0, 2 * Math.PI);
+  ctx.fill();
+}
+
 function cutoffFromPointer(canvas, clientX) {
   const rect = canvas.getBoundingClientRect();
-  const left = 47;
-  const right = 14;
+  const left = canvas.id === "travel-chart" ? 64 : 47;
+  const right = canvas.id === "travel-chart" ? 16 : 14;
   const x = Math.max(0, Math.min(rect.width - left - right, clientX - rect.left - left));
   return Math.round(x / (rect.width - left - right) * state.data.metadata.timeSteps);
 }
@@ -305,26 +388,40 @@ function renderScenario() {
   state.frame = 0;
   buildRoad();
   $("#visualization").hidden = false;
+  $("#road-network").textContent = data.scenario.network;
   $("#road-end").textContent = `Segment ${String(data.metadata.segments).padStart(2, "0")} · ${(data.metadata.segments * data.metadata.segmentLengthKm).toFixed(1)} km`;
   $("#timeline").max = data.metadata.timeSteps;
   $("#velocity-max").textContent = `${data.scales.velocity[1].toFixed(0)} km/h`;
   $("#density-max").textContent = `${data.scales.density[1].toFixed(0)} veh/km/lane`;
   $("#source-path").textContent = `Source · results/${data.scenario.id}`;
   $("#resolution").textContent = `${data.metadata.segments} segments · ${data.metadata.timeStepSeconds.toFixed(0)}-second resolution`;
+  $("#baseline-travel-time").textContent = data.travelTime.baseline.toFixed(2);
+  $("#controlled-travel-time").textContent = data.travelTime.controlled.toFixed(2);
+  for (const canvas of $$("canvas[role='slider']")) {
+    canvas.setAttribute("aria-valuemin", "0");
+    canvas.setAttribute("aria-valuemax", data.metadata.timeSteps);
+  }
   setCutoff(0);
 }
 
 async function loadScenario(id) {
   stopPlayback();
+  state.requestController?.abort();
+  const request = new AbortController();
+  state.requestController = request;
+  state.data = null;
+  state.roadMotion = [];
   setLoading(true);
   try {
-    const response = await fetch(`/api/scenario?id=${encodeURIComponent(id)}`);
+    const response = await fetch(`/api/scenario?id=${encodeURIComponent(id)}`, { signal: request.signal });
     const payload = await response.json();
-    if (!response.ok) throw new Error(payload.error || "This scenario could not be simulated.");
+    if (request.signal.aborted) return;
+    if (!response.ok) throw new Error(payload.error || "This saved run could not be loaded.");
     state.data = payload;
     renderScenario();
     setLoading(false);
   } catch (error) {
+    if (request.signal.aborted) return;
     showError(error.message);
   }
 }
@@ -335,7 +432,7 @@ async function initialize() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "The scenario reader is unavailable.");
     state.scenarios = payload.scenarios;
-    if (!state.scenarios.length) throw new Error("No compatible result scenarios were found.");
+    if (!state.scenarios.length) throw new Error("No valid run.npz bundles found in results/. Save a run with save_result first.");
 
     const select = $("#scenario-select");
     select.replaceChildren(...state.scenarios.map((scenario) => {
@@ -368,20 +465,36 @@ $("#scenario-select").addEventListener("change", (event) => {
 });
 
 $("#play-button").addEventListener("click", () => state.playing ? stopPlayback() : startPlayback());
-$("#timeline").addEventListener("input", (event) => setCutoff(Number(event.target.value)));
+$("#timeline").addEventListener("input", (event) => {
+  stopPlayback();
+  setCutoff(Number(event.target.value));
+});
 $("#playback-speed").addEventListener("change", (event) => {
   state.playbackSpeed = Number(event.target.value);
   if (state.playing) startPlayback();
 });
 
-for (const id of ["velocity-heatmap", "density-heatmap"]) {
+for (const id of ["velocity-heatmap", "density-heatmap", "travel-chart"]) {
   const canvas = $(`#${id}`);
-  canvas.addEventListener("click", (event) => setCutoff(cutoffFromPointer(canvas, event.clientX)));
+  canvas.addEventListener("click", (event) => {
+    if (!state.data) return;
+    stopPlayback();
+    setCutoff(cutoffFromPointer(canvas, event.clientX));
+  });
   canvas.addEventListener("keydown", (event) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    if (!state.data) return;
+    event.preventDefault();
+    stopPlayback();
     if (event.key === "ArrowLeft") setCutoff(state.cutoff - 1);
     if (event.key === "ArrowRight") setCutoff(state.cutoff + 1);
+    if (event.key === "Home") setCutoff(0);
+    if (event.key === "End") setCutoff(state.data.metadata.timeSteps);
   });
 }
 
-new ResizeObserver(drawHeatmaps).observe($(".diagrams"));
+new ResizeObserver(() => {
+  drawHeatmaps();
+  drawTravelChart();
+}).observe($("#visualization"));
 initialize();

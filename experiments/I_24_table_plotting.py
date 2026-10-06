@@ -2,8 +2,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-from paths import REPO_DIR
-from archive.cc_analysis import run_static_analysis, run_static_dynamic_analysis, static_results_to_latex
+from traffic_flow.paths import REPO_DIR
+from traffic_flow.results.i24 import run_static_analysis, run_static_dynamic_analysis, static_results_to_latex
 
 # ── Dates to sweep ───────────────────────────────────────────────────────────
 #STATIC_DATES = ["11_30"]

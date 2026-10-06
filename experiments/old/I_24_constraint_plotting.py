@@ -15,10 +15,10 @@ from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.ticker import AutoMinorLocator
 
 sys.path.append('../src')  # ADAPT: match your notebook's sys.path setup
-from sim_types import MetanetState
-from traffic_sim import METANET_Simulator
+from traffic_flow.types import MetanetState
+from traffic_flow.model.simulation import METANET_Simulator
 from param_loader import METANET_Params
-from generate_demand_synthetic import get_ff_tts
+from traffic_flow.metrics import get_ff_tts
 
 def smooth_inflow(inflow, window_size=2):
     # Create averaging kernel

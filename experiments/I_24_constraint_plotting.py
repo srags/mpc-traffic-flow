@@ -32,18 +32,18 @@ import matplotlib.pyplot as plt
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
-from viz import Plotter
+from traffic_flow.results.plots import Plotter
 
-from paths import DEFAULT_CALIBRATION           # noqa: E402
-from paths import REPO_DIR
-from archive.cc_analysis import (                    # noqa: E402
+from traffic_flow.config import CalSource
+from traffic_flow.paths import REPO_DIR
+from traffic_flow.results.i24 import (                    # noqa: E402
     L, time_step,
     load_day_data, get_ff_tts,
 )
-from traffic_sim import METANET_Simulator  # noqa: E402
+from traffic_flow.model.simulation import METANET_Simulator  # noqa: E402
 
 DATE = "11_30"
-SWEEP_ROOT = REPO_DIR / "results" / "i24" / f"i24_{DATE}" / DEFAULT_CALIBRATION
+SWEEP_ROOT = REPO_DIR / "results" / "i24" / f"i24_{DATE}" / CalSource.FIXED_RAMPS
 SAVE_PATH = REPO_DIR / "figs" / "i24_constraints.png"
 HEATMAP_SAVE_PATH = REPO_DIR / "figs" / "i24_safety_heatmap.png"
 

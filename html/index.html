@@ -41,7 +41,7 @@
         </div>
 
         <div class="road-shell">
-          <div class="direction-label"><span>West</span><span>I-24</span><span>East</span></div>
+          <div class="direction-label"><span>Upstream</span><span id="road-network"></span><span>Downstream</span></div>
           <div class="road-surface" id="road-surface"></div>
           <div class="road-caption"><span>Segment 1 · 0.0 km</span><span id="road-end"></span></div>
         </div>
@@ -79,6 +79,21 @@
         <article><span>Mean velocity</span><strong id="mean-velocity">—</strong><small>km/h</small></article>
         <article><span>Peak density</span><strong id="peak-density">—</strong><small>veh/km/lane</small></article>
         <article><span>Peak queue</span><strong id="peak-queue">—</strong><small>vehicles</small></article>
+      </section>
+
+      <section class="panel travel-card" aria-labelledby="travel-heading">
+        <div class="section-heading">
+          <h2 id="travel-heading">Total travel time</h2>
+          <span class="travel-readout" id="travel-readout"></span>
+        </div>
+        <canvas id="travel-chart" height="220" tabindex="0" role="slider"
+                aria-label="Total travel time by optimization cutoff"></canvas>
+        <div class="travel-key">
+          <span><i class="baseline-line"></i>Baseline <b id="baseline-travel-time"></b></span>
+          <span><i class="controlled-line"></i>Fully controlled <b id="controlled-travel-time"></b></span>
+          <span>veh-hr, including queue</span>
+        </div>
+        <p class="chart-note">Controlled history + baseline future, matching the reveal above. Not a new partial-policy simulation; temporary rises are possible.</p>
       </section>
 
       <section class="diagrams">
