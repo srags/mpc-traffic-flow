@@ -19,10 +19,10 @@ START_HOUR = 7.5
 
 def main() -> None:
   matches = load_runs(
-    "i24", "11_30", calibration=CalRef(CalSource.FIXED_RAMPS, interval = None), study=Study.SAFETY_SWEEP, 
+    "i24", "11_28", calibration=CalRef(CalSource.FIXED_RAMPS, interval = None), study=None, 
     where=lambda config: all([
       # config.speed_lb == 0,
-      config.initialize_vsl is not None
+      # config.initialize_vsl is not None
       ]),
   )
   if len(matches) != 1: raise ValueError(f"Expected one run, found {len(matches)}. Refine the selection.")

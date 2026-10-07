@@ -12,29 +12,21 @@ from typing import Literal, TypeAlias, TypedDict
 
 import numpy as np
 
-from .paths import DEFAULT_CALIBRATION
 from .types import hr, km, space_vec, time_vec, time_space
-
 
 class _StringChoice(str, Enum):
     # Python 3.10 equivalent of StrEnum's string/path formatting behavior.
-    def __str__(self) -> str:
-        return self.value
-
+    def __str__(self) -> str: return self.value
 
 class LossMode(_StringChoice):
     """How the losses across perturbed calibration scenarios are combined."""
-
     MINMAX = "minmax"
     MEAN = "mean"
     MEAN_PLUS_WORST = "mean_plus_worst"
 
-
 class InitMode(_StringChoice):
     """Named alternative to a numeric constant-speed MPC initialization."""
-
     ADAPTIVE = "adaptive"  # Mean initial velocity, not an additional solver mode.
-
 
 class Study(_StringChoice):
     """Existing result-directory labels, not switches that enable constraints.
@@ -42,11 +34,9 @@ class Study(_StringChoice):
     Set the actual bounds/hold durations on MPCConfig. Use None for the
     ordinary result directory.
     """
-
     SPEED_LB = "speed_lb"
     HOLD_LENGTH = "hold_length"
     SAFETY_SWEEP = "safety_sweep"
-
 
 class CalSource(_StringChoice):
     """Known on-disk layouts; selecting one does not run calibration.
@@ -54,11 +44,9 @@ class CalSource(_StringChoice):
     Custom source strings remain supported. DYNAMIC additionally
     requires CalRef.interval.
     """
-
-    FIXED_RAMPS = DEFAULT_CALIBRATION
+    FIXED_RAMPS = "calibration_static/fixed_ramping"
     VARYING_RAMPS = "calibration_static/time_varying_ramping"
     DYNAMIC = "calibration_dynamic"
-
 
 LossChoice: TypeAlias = LossMode | Literal["minmax", "mean", "mean_plus_worst"]
 StudyChoice: TypeAlias = Study | Literal["", "speed_lb", "hold_length", "safety_sweep"] | None
@@ -66,13 +54,11 @@ InitValue: TypeAlias = float | InitMode | Literal["adaptive"]
 # Tuples are preferred for configurations; lists remain supported for old callers.
 InitChoices: TypeAlias = InitValue | tuple[InitValue, ...] | list[InitValue] | None
 
-
 @dataclass(frozen=True)
 class CalRef:
     """Which saved calibration to load—not settings for fitting a new one."""
     source: CalSource | str = CalSource.FIXED_RAMPS
     interval: int | None = None
-
 
 @dataclass(frozen=True)
 class ScenarioConfig:
@@ -87,7 +73,6 @@ class ScenarioConfig:
     time_step: hr
     time_steps: int
     start_time: hr = 0.0
-
 
 @dataclass(frozen=True)
 class SyntheticConfig:
@@ -104,7 +89,6 @@ class SyntheticConfig:
     peak_start: hr = 0.055
     peak_duration: hr = 0.5
     initial_speed: float = 90.0
-
     def __post_init__(self) -> None:
         positive = (self.duration, self.time_step, self.L, self.initial_speed, *self.lanes)
         if not self.lanes or not all(np.isfinite(x) and x > 0 for x in positive):
@@ -116,19 +100,12 @@ class SyntheticConfig:
         if not (0 <= self.peak_start <= self.duration and
                 0 <= self.peak_duration <= self.duration - self.peak_start):
             raise ValueError("Peak interval must lie within the simulation duration")
-
     @property
-    def num_segments(self) -> int:
-        return len(self.lanes)
-
+    def num_segments(self) -> int: return len(self.lanes)
     @property
-    def time_steps(self) -> int:
-        return int(self.duration / self.time_step)
-
+    def time_steps(self) -> int: return int(self.duration / self.time_step)
     @property
-    def total_distance(self) -> km:
-        return self.L * self.num_segments
-
+    def total_distance(self) -> km: return self.L * self.num_segments
 
 @dataclass(frozen=True)
 class MPCConfig:
@@ -160,7 +137,6 @@ class RobustOptConfig:
     lam_worst is used only with LossMode.MEAN_PLUS_WORST.
     Pass this as CalibrationConfig.robust_opt; None selects nominal calibration.
     """
-
     # --- Robust scenario settings ---
     S: int = 25                              # number of scenarios
     bc_noise_percent: float = 10.0           # passed to generate_perturbations(percent_noise=...)
@@ -203,7 +179,6 @@ class CalibrationConfig:
 
     x0: CalibrationInitialGuess | None = None
     tee: bool = True
-
 
 def default_mpc_config(spec: ScenarioConfig) -> MPCConfig:
     """The current cc_run settings, including its 150 km/hr fallback seed."""

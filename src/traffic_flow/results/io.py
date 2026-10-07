@@ -57,9 +57,7 @@ def save_result(result: RunResult, output_dir: Path) -> Path:
 
     temporary: Path | None = None
     try:
-        with NamedTemporaryFile(
-            dir=output_dir, suffix=".npz", delete=False,
-        ) as stream:
+        with NamedTemporaryFile(dir=output_dir, suffix=".npz", delete=False) as stream:
             temporary = Path(stream.name)
             np.savez_compressed(stream, **arrays)
         temporary.replace(path)
@@ -84,9 +82,7 @@ def load_result(output_dir: Path) -> RunResult:
             raise ValueError("Incomplete or unsupported scenario metadata.")
 
         settings = metadata["config"]
-        expected = {
-            field.name for field in fields(MPCConfig)
-        } - {"initialize_vsl"}
+        expected = {field.name for field in fields(MPCConfig)} - {"initialize_vsl"}
         if set(settings) != expected:
             raise ValueError("Incomplete or unsupported MPC settings.")
 
@@ -134,16 +130,13 @@ def load_result(output_dir: Path) -> RunResult:
         )
 
 
-def load_runs(
-    dataset: str, date: str,
-    calibration: CalRef,
-    study: StudyChoice = None,
-    where: Callable[[MPCConfig], bool] | None = None,
+def load_runs(dataset: str, date: str, calibration: CalRef,
+    study: StudyChoice = None, where: Callable[[MPCConfig], bool] | None = None
 ) -> list[RunResult]:
     """Load saved runs matching the requested configuration."""
     results = []
 
-    for directory in find_run_dirs(dataset, date, calibration=calibration, study=study,):
+    for directory in find_run_dirs(dataset, date, calibration=calibration, study=study):
         result = load_result(directory)
         spec = result.scenario.spec
         if (spec.freeway, spec.date) != (dataset, date):

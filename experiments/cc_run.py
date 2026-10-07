@@ -23,7 +23,7 @@ def cc_optimize(dataset: str, date: str, calibration: CalRef, study: StudyChoice
 if __name__ == "__main__":
   # regular run
   if 1: cc_optimize(
-    dataset = "i24", date = "11_30",
+    dataset = "i24", date = "11_28",
     calibration = CalRef(CalSource.FIXED_RAMPS, interval = None),
     study = None, speed_lb = 0,
     init_fixed = 150.0 # (InitMode.ADAPTIVE, 150.0)
