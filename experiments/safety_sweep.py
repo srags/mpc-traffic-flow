@@ -23,7 +23,7 @@ if _SRC_DIR not in sys.path:
 from paths import DEFAULT_CALIBRATION, FIGS_ROOT, i24_data, i24_results
 from traffic_sim import run_metanet_sim
 from param_loader import METANET_Params
-from generate_demand_synthetic import get_ff_tts
+from cc_analysis import ff_tts_vkm
 
 from safety_sweep_plots import (
     load_sweep_results,
@@ -134,12 +134,15 @@ def load_data(
         0,
     )
 
+    # Drained after the demand horizon (see run_metanet_sim's until_ff), so delay covers
+    # every vehicle's whole trip and the baseline and each sweep run serve the same
+    # vehicle-km. load_sweep_results must evaluate each sweep point the same way.
     vsl_baseline = np.ones((downstream_density.shape[0], num_segments)) * 150
-    _, v_baseline, _, tts_baseline = run_metanet_sim(
+    p_baseline, v_baseline, _, tts_baseline = run_metanet_sim(
         time_step, L, init_state,
         data_inflow[start_time:], downstream_density[start_time:],
         model_params, lanes=lane_dict, vsl_speeds=vsl_baseline,
-        plotting=True, real_data=False,
+        plotting=True, real_data=False, until_ff=True,
     )
 
     control_zone = [i for i in range(2, num_segments)]
@@ -147,7 +150,9 @@ def load_data(
     # Free-flow travel time — the "uncontrollable" floor of TTS that can never be
     # eliminated by VSL. Controllable congestion (%) is expressed relative to
     # delay = TTS - ff_ttt, NOT relative to raw TTS (see I_24_constraint_plotting.py).
-    ff_ttt = get_ff_tts(data_inflow, time_step, L, model_params["v_free"])
+    ff_ttt = ff_tts_vkm(p_baseline[:-1, :], v_baseline[:-1, :],
+                        np.array([lane_dict[i] for i in range(num_segments)]),
+                        time_step, L, model_params["v_free"])
 
     return {
         "results_path": results_path,

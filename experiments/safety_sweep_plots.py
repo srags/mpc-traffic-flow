@@ -61,11 +61,13 @@ def load_sweep_results(
                 print(f"Warning: failed to load {path}: {exc}")
                 continue
 
+            # until_ff to match the baseline in safety_sweep.load_data: both drain, so
+            # TTS covers whole trips and every run serves the same vehicle-km.
             _, _, _, tts = run_metanet_sim(
                 time_step, L, init_state,
                 demand[start_time:], downstream_density[start_time:],
                 model_params, lanes=lane_dict, vsl_speeds=vsl,
-                plotting=True, real_data=False,
+                plotting=True, real_data=False, until_ff=True,
             )
 
             vsl_for_roughness = vsl[:, control_zone] if control_zone is not None else vsl

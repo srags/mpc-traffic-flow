@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(REPO, "src"))
 from paths import fig, i24_results           # noqa: E402
 from cc_analysis import (                    # noqa: E402
     L, time_step,
-    load_day_data, get_ff_tts, format_date_label,
+    load_day_data, ff_tts_vkm, format_date_label,
 )
 from traffic_sim import run_metanet_sim      # noqa: E402
 
@@ -45,10 +45,14 @@ def run_day(date):
     day = load_day_data(date)
     params = day["static_params"]
 
-    _, v_sim, _, tts_sim = run_metanet_sim(
+    # Both runs drain after the demand horizon so every vehicle finishes its trip and the
+    # two serve the same vehicle-km, which is what delay and CC are scored on. The panels
+    # below still show only the 60 min data window; the drain is identical to the fixed
+    # horizon up to that point, so the extra steps are simply sliced off.
+    p_sim, v_sim, _, tts_sim = run_metanet_sim(
         time_step, L, day["init_state"], day["data_inflow"],
         day["ds_density_norm"], params, lanes=day["lane_dict"],
-        vsl_speeds=None, plotting=True, real_data=True,
+        vsl_speeds=None, plotting=True, real_data=True, until_ff=True,
     )
 
     vsl_path = i24_results(date, "optimal_vsl.npy")
@@ -57,12 +61,14 @@ def run_day(date):
     _, v_opt, _, tts_opt = run_metanet_sim(
         time_step, L, day["init_state"], day["data_inflow"],
         day["ds_density_norm"], params, lanes=day["lane_dict"],
-        vsl_speeds=vsl, plotting=True, real_data=False,
+        vsl_speeds=vsl, plotting=True, real_data=False, until_ff=True,
     )
 
-    v_free = params["v_free"]
-    ff_ttt = get_ff_tts(day["data_inflow"], time_step, L,
-                        np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
+    n_window = day["v_trimmed"].shape[0]
+
+    # One free-flow baseline for both runs, taken from the uncontrolled one.
+    ff_ttt = ff_tts_vkm(p_sim[:-1, :], v_sim[:-1, :], day["lane_counts"],
+                        time_step, L, params["v_free"])
     delay, opt_delay = tts_sim - ff_ttt, tts_opt - ff_ttt
     cc = float(np.clip((delay - opt_delay) / delay * 100, 0, 100))
 
@@ -70,8 +76,8 @@ def run_day(date):
         "date": date,
         "label": format_date_label(date),
         "observed": day["v_trimmed"],
-        "no_control": v_sim[:-1, :],
-        "controlled": v_opt[:-1, :],
+        "no_control": v_sim[:n_window, :],
+        "controlled": v_opt[:n_window, :],
         "tts": tts_sim,
         "delay": delay,
         "opt_delay": opt_delay,

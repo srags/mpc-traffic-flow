@@ -35,7 +35,7 @@ sys.path.insert(0, os.path.join(REPO, "src"))
 from paths import fig, i24_results           # noqa: E402
 from cc_analysis import (                    # noqa: E402
     L, time_step,
-    load_day_data, get_ff_tts,
+    load_day_data, ff_tts_vkm,
 )
 from traffic_sim import run_metanet_sim      # noqa: E402
 
@@ -70,14 +70,16 @@ def load_baseline(date=DATE):
     day = load_day_data(date)
     params = day["static_params"]
 
-    _, _, _, tts_base = run_metanet_sim(
+    # Drained after the demand horizon, so delay covers every vehicle's whole trip and
+    # the baseline and each sweep run serve the same vehicle-km.
+    p_base, v_base, _, tts_base = run_metanet_sim(
         time_step, L, day["init_state"], day["data_inflow"],
         day["ds_density_norm"], params, lanes=day["lane_dict"],
-        vsl_speeds=None, plotting=True, real_data=True,
+        vsl_speeds=None, plotting=True, real_data=True, until_ff=True,
     )
-    v_free = params["v_free"]
-    ff_ttt = get_ff_tts(day["data_inflow"], time_step, L,
-                        np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
+    # One free-flow baseline, from the uncontrolled run, reused for every sweep point.
+    ff_ttt = ff_tts_vkm(p_base[:-1, :], v_base[:-1, :], day["lane_counts"],
+                        time_step, L, params["v_free"])
     return day, params, tts_base - ff_ttt, ff_ttt
 
 
@@ -94,7 +96,7 @@ def cc_for(path, day, params, delay_base, ff_ttt):
     _, _, _, tts = run_metanet_sim(
         time_step, L, day["init_state"], day["data_inflow"],
         day["ds_density_norm"], params, lanes=day["lane_dict"],
-        vsl_speeds=vsl, plotting=True, real_data=False,
+        vsl_speeds=vsl, plotting=True, real_data=False, until_ff=True,
     )
     return float(np.clip((delay_base - (tts - ff_ttt)) / delay_base * 100, 0, 100))
 

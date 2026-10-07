@@ -194,6 +194,31 @@ def metanet_step(t: int,
     return density_tp1, velocity_tp1, queue_tp1, flow_origin_tp1, flow_tp1
 
 
+def _extend_params_for_drain(params: Dict[str, np.ndarray], time_steps: int,
+                             total_steps: int, num_segments: int) -> Dict[str, np.ndarray]:
+    """Copy of `params` covering the drain period, with on-ramp inflow switched off.
+
+    Time-varying (2D) parameters hold their last row. The ramp term `r` is made 2D so
+    it can be zeroed after `time_steps`: it is a constant inflow, so leaving it on would
+    keep feeding the corridor and it would never empty.
+    """
+    extended = dict(params)
+    pad = total_steps - time_steps
+
+    for key, value in params.items():
+        if np.ndim(value) == 2:
+            extended[key] = np.vstack([value, np.tile(value[-1], (pad, 1))])
+
+    r = np.asarray(params.get("r", 0.0), dtype=float)
+    if r.ndim == 0:
+        r = np.full(num_segments, float(r))
+    if r.ndim == 1:
+        r = np.tile(r, (time_steps, 1))
+    extended["r"] = np.vstack([r[:time_steps], np.zeros((pad, num_segments))])
+
+    return extended
+
+
 def run_metanet_sim(T: float,
                     l: float,
                     init_traffic_state: Tuple[np.ndarray, np.ndarray, float, float],
@@ -204,13 +229,34 @@ def run_metanet_sim(T: float,
                     lanes: Optional[Dict[int, int]] = None,
                     plotting: bool = False,
                     real_data: bool = False,
-                    opt: bool = False):
+                    opt: bool = False,
+                    until_ff: bool = False,
+                    drain_tol: Optional[float] = None,
+                    max_drain_steps: Optional[int] = None):
     """Run a METANET simulation for the provided horizon by repeatedly calling `metanet_step`.
 
     This preserves the original function's outputs for compatibility:
       - If plotting=True: returns (density, velocity, queue, total_travel_time)
       - If opt=True: returns (density, velocity, queue, flow_origin, V_fd, total_travel_time)
       - Else: returns ((density_T, velocity_T, flow_origin_T, queue_T), total_travel_time)
+
+    With ``until_ff=True`` the simulation keeps running past the demand horizon until the
+    corridor is empty, so every vehicle finishes its trip inside the returned arrays. Over
+    a fixed horizon a congested run leaves more vehicles mid-trip than an uncontrolled one,
+    so the two serve different vehicle-km and are not directly comparable; draining removes
+    that difference. During the drain nothing enters: origin demand and on-ramp inflow are
+    zero, speed limits are released, and the downstream boundary density holds its last
+    value until the horizon ends, after which it follows the last segment's own density
+    (zero-gradient free outflow). Holding the observed final density instead can leave a
+    congested boundary pinning the exit, and on several I-24 days the corridor then never
+    empties. The run ends when fewer than ``drain_tol`` vehicles remain, or after
+    ``max_drain_steps`` extra steps (default 10x the horizon), which prints a warning.
+
+    ``density_dynamics`` floors each segment at 1e-4 veh/km/lane, so the corridor can
+    never hold fewer than that floor summed over segments. ``drain_tol`` defaults to ten
+    times that floor; a smaller value can never be reached and is rejected. Where the run
+    stops within this range barely matters: on I-24 11/30, stopping at 0.009 vehicles
+    rather than 0.003 moves TTS by 0.03 veh-h out of 392.
     """
     time_steps = downstream_density.shape[0]
     num_segments = init_traffic_state[0].shape[0]
@@ -221,6 +267,25 @@ def run_metanet_sim(T: float,
     if lanes is None or len(lanes) == 0:
         lanes = {i: 1 for i in range(num_segments)}
 
+    total_steps = time_steps
+    if until_ff:
+        # Every segment is floored at 1e-4 veh/km/lane, so this is the emptiest the
+        # corridor can ever be; a tolerance at or below it would never be reached.
+        empty_floor = 1e-4 * sum(lanes[i] for i in range(num_segments)) * l
+        if drain_tol is None:
+            drain_tol = 10 * empty_floor
+        elif drain_tol <= empty_floor:
+            raise ValueError(
+                f"drain_tol={drain_tol:g} is at or below the density floor "
+                f"({empty_floor:.2e} vehicles), so the corridor can never get that empty.")
+        pad = int(10 * time_steps if max_drain_steps is None else max_drain_steps)
+        total_steps = time_steps + pad
+        demand = np.concatenate([demand, np.zeros(pad)])
+        downstream_density = np.concatenate(
+            [downstream_density, np.full(pad, downstream_density[-1])])
+        vsl_speeds = np.vstack([vsl_speeds, np.full((pad, num_segments), 1e4)])
+        params = _extend_params_for_drain(params, time_steps, total_steps, num_segments)
+
     initial_density, initial_velocity, initial_flow_or, initial_queue = init_traffic_state
     init_flow_or_real = origin_flow_dynamics_MN(
         demand[0], initial_density[0], initial_queue, lanes[0], T,
@@ -228,11 +293,11 @@ def run_metanet_sim(T: float,
         )
 
     # Allocate histories
-    density = np.zeros((time_steps + 1, num_segments), dtype=float)
-    velocity = np.zeros((time_steps + 1, num_segments), dtype=float)
-    flow = np.zeros((time_steps + 1, num_segments), dtype=float)
-    queue = np.zeros((time_steps + 1, 1), dtype=float)
-    flow_origin = np.zeros((time_steps + 1, 1), dtype=float)
+    density = np.zeros((total_steps + 1, num_segments), dtype=float)
+    velocity = np.zeros((total_steps + 1, num_segments), dtype=float)
+    flow = np.zeros((total_steps + 1, num_segments), dtype=float)
+    queue = np.zeros((total_steps + 1, 1), dtype=float)
+    flow_origin = np.zeros((total_steps + 1, 1), dtype=float)
 
     # Initial conditions
     density[0] = initial_density
@@ -242,7 +307,12 @@ def run_metanet_sim(T: float,
     queue[0, 0] = initial_queue
 
     # Main loop
-    for t in range(time_steps):
+    steps_run = total_steps
+    for t in range(total_steps):
+        if until_ff and t >= time_steps:
+            # Free outflow while draining: the boundary follows the last segment, so the
+            # anticipation term stops holding traffic back and the corridor can empty.
+            downstream_density[t] = density[t, -1]
         d_tp1, v_tp1, q_tp1, fo_tp1, f_tp1 = metanet_step(
             t,
             density[t],
@@ -264,6 +334,12 @@ def run_metanet_sim(T: float,
         flow[t + 1] = f_tp1
         flow_origin[t + 1, 0] = fo_tp1
 
+        if until_ff and t + 1 >= time_steps:
+            vehicles = sum(density[t + 1, i] * lanes[i] * l for i in range(num_segments))
+            if vehicles <= drain_tol:
+                steps_run = t + 1
+                break
+
         # if t < time_steps - 1:
             # print(t, fo_tp1, demand[t+1])
     # print("Final flow origin:", flow_origin.T)
@@ -271,6 +347,18 @@ def run_metanet_sim(T: float,
     # print("Queue sim:", np.round(queue, 3).T)
     # print(demand)
     # print(params["p_crit"][0])
+
+    if until_ff:
+        if steps_run == total_steps:
+            remaining = sum(density[-1, i] * lanes[i] * l for i in range(num_segments))
+            print(f"Warning: corridor not empty after {total_steps - time_steps} drain steps "
+                  f"({remaining:.2f} vehicles left); raise max_drain_steps.")
+        density = density[:steps_run + 1]
+        velocity = velocity[:steps_run + 1]
+        flow = flow[:steps_run + 1]
+        queue = queue[:steps_run + 1]
+        flow_origin = flow_origin[:steps_run + 1]
+        vsl_speeds = vsl_speeds[:steps_run]
 
     # Compute total travel time
     total_travel_time = T * (

@@ -26,9 +26,58 @@ def get_num_veh(demand_profile, time_step):
     return sum(demand_profile) * time_step
 
 def get_ff_tts(demand_profile, time_step, length, v_free):
+    """Free-flow TTS charging every mainline arrival one full corridor traversal.
+
+    Superseded by `ff_tts_vkm`, which also counts vehicles entering at on-ramps and
+    charges each vehicle only the distance it travels. Kept so the numbers in results
+    produced before that change can still be reproduced.
+    """
     num_vehicles   = sum(demand_profile) * time_step
     ff_travel_time = sum(length / v for v in v_free)
     return num_vehicles * ff_travel_time
+
+def ff_tts_vkm(density, velocity, lane_counts, time_step, length, v_free):
+    """Free-flow TTS for the travel a run actually served, in vehicle-hours.
+
+    Vehicle-km in each segment, charged at that segment's free-flow speed:
+
+        veh_km_i = sum_t rho_i(t) v_i(t) lanes_i * time_step * length
+        TTS_ff   = sum_i veh_km_i / v_free_i
+
+    Measuring travel rather than counting trips is what makes this correct when
+    ramps are present: a vehicle entering at an on-ramp contributes vehicle-km only
+    to the segments it uses, and one leaving at an off-ramp stops contributing there.
+    `get_ff_tts` instead counts mainline arrivals only and charges each the whole
+    corridor, which on I-24 ignores the on-ramp inflows (roughly twice the mainline
+    demand) and overcharges everything exiting at an off-ramp.
+
+    Args:
+        density, velocity: (time_steps, num_segments) per-lane fields from one run.
+        lane_counts: (num_segments,) lanes per segment.
+        time_step, length: hours per step, km per segment.
+        v_free: (num_segments,) free-flow speeds, or (time_steps, num_segments) for a
+            time-varying calibration, in which case the max over time is used.
+
+    Returns:
+        free flow TTS (vehicle-hours)
+    """
+    v_free = np.max(v_free, axis=0) if np.ndim(v_free) == 2 else v_free
+    veh_km = (density * velocity * lane_counts).sum(axis=0) * time_step * length
+    return float((veh_km / v_free).sum())
+
+def vehicles_served(density, velocity, lane_counts, beta, time_step):
+    """Vehicles that left the corridor over a run.
+
+    A vehicle departs either out of the last segment or at an off-ramp, which takes
+    `q_i * beta_i / (1 - beta_i)` because `density_dynamics` removes `outflow/(1-beta)`.
+    `get_num_veh` counts mainline arrivals only, so on I-24 it misses the on-ramp
+    inflows -- roughly twice the mainline demand -- and per-vehicle metrics built on it
+    are too large by that factor. Over a run that drains (`until_ff=True`) this equals
+    the vehicles that entered.
+    """
+    q = density * velocity * lane_counts
+    departures = q[:, -1] + (q * beta / (1 - beta)).sum(axis=1)
+    return float(departures.sum() * time_step)
 
 def smooth_inflow(inflow, window_size=2):
     kernel    = np.ones(window_size) / window_size
@@ -57,7 +106,7 @@ def format_date_label(date_str, year=2022):
     return f"{month:02d}/{day:02d} ({tag})"
 
 
-def load_day_data(date):
+def load_day_data(date, cal_path = "calibration_static/fixed_ramping"):
     """
     Load MOTION data for a single date and build the shared boundary
     conditions / static-calibration parameters needed by any VSL run.
@@ -78,7 +127,7 @@ def load_day_data(date):
     )
     num_segments = density_data.shape[1] - 2
 
-    static_cal_path = f"{root_path}/calibration_static/fixed_ramping"
+    static_cal_path = f"{root_path}/{cal_path}"
     static_params = METANET_Params(
         path=static_cal_path,
         num_timesteps=flow_data.shape[0],
@@ -115,10 +164,11 @@ def run_one_day(init_state, data_inflow, ds_density_norm, model_params,
     Run baseline + VSL simulations for one calibration variant.
     Returns a dict of metrics, or None if the VSL file is missing.
     """
+    num_timesteps = v_trimmed.shape[0]
     p_sim, v_sim, _, tts_sim = run_metanet_sim(
         time_step, L, init_state, data_inflow, ds_density_norm,
         model_params, lanes=lane_dict, vsl_speeds=None,
-        plotting=True, real_data=True
+        plotting=True, real_data=True, until_ff=True
     )
     p_sim = p_sim[:-1, :]
     v_sim = v_sim[:-1, :]
@@ -132,27 +182,28 @@ def run_one_day(init_state, data_inflow, ds_density_norm, model_params,
     p_opt, v_opt, _, tts_opt = run_metanet_sim(
         time_step, L, init_state, data_inflow, ds_density_norm,
         model_params, lanes=lane_dict, vsl_speeds=vsl,
-        plotting=True, real_data=False
+        plotting=True, real_data=False, until_ff=True
     )
     v_opt = v_opt[:-1, :]
     p_opt = p_opt[:-1, :]
 
-    v_free = model_params['v_free']
-    ff_ttt    = get_ff_tts(data_inflow, time_step, L,
-                           np.max(v_free, axis=0) if len(v_free.shape)==2 else v_free)
+    # One free-flow baseline for both runs, taken from the uncontrolled one.
+    ff_ttt    = ff_tts_vkm(p_sim, v_sim, lane_counts, time_step, L, model_params['v_free'])
     delay     = tts_sim - ff_ttt
     opt_delay = tts_opt - ff_ttt
     cc        = (delay - opt_delay) / delay * 100
     cc = np.clip(cc, 0, 100)  # avoid negative CC due to numerical issues
-    sim_mape_ = mape(v_trimmed, v_sim)
+    sim_mape_ = mape(v_trimmed, v_sim[0:num_timesteps, :])
 
     gt_tt      = time_step * sum(np.sum(d_trimmed[:, i]) * lane_counts[i] * L
                                  for i in range(num_segments))
-    metanet_tt = time_step * sum(np.sum(p_sim[:, i])     * lane_counts[i] * L
+    metanet_tt = time_step * sum(np.sum(p_sim[0:num_timesteps, i])     * lane_counts[i] * L
                                  for i in range(num_segments))
     tts_mape_  = np.abs(gt_tt - metanet_tt) / gt_tt * 100
 
-    num_vehicles    = get_num_veh(data_inflow, time_step)
+    # Everyone the corridor served, ramp entries included, to match what TTS counts.
+    num_vehicles    = vehicles_served(p_sim, v_sim, lane_counts,
+                                      model_params['beta'], time_step)
     avg_tt_reduced_ = (tts_sim - tts_opt) / num_vehicles * 60  # minutes/vehicle
 
     return {
