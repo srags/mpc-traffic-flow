@@ -14,7 +14,7 @@ from .types import (
 
 from copy import deepcopy
 
-def _initial_state(traffic: TrafficData) -> MetanetState:
+def init_state(traffic: TrafficData) -> MetanetState:
   return MetanetState(
     density=traffic.initial_density,
     velocity=traffic.initial_velocity,
@@ -26,7 +26,7 @@ def _initial_state(traffic: TrafficData) -> MetanetState:
 def simulate_scenario(
     traffic: TrafficData,
     params: MetanetParams,
-    *, T: hr, l: km,
+    T: hr, l: km,
     vsl: time_space | None = None,
     steps: int | None = None,
     real_data: bool = False,
@@ -48,7 +48,7 @@ def simulate_scenario(
   return SimulationResult(*simulator.run_with_history(
     demand=traffic.inflow[:steps],
     downstream_density=traffic.downstream_density[:steps],
-    init_traffic_state=_initial_state(traffic),
+    init_traffic_state=init_state(traffic),
     vsl_speeds=vsl,
   ))
 
@@ -78,7 +78,7 @@ def optimize(scenario: Scenario, params: MetanetParams, config: MPCConfig) -> Ru
       lanes, params=params,
       T=scenario.spec.time_step, l=scenario.spec.L,
       num_segments=num_segments,
-      init_state=_initial_state(scenario.traffic),
+      init_state=init_state(scenario.traffic),
       **{field.name: getattr(config, field.name) for field in fields(config)}, # asdict but no deep copy
     )
     scenario, params, config = deepcopy((scenario, params, config))

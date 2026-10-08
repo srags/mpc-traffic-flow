@@ -7,7 +7,7 @@ import numpy as np
 from ..config import CalRef, ScenarioConfig
 from ..model.parameters import load_calibrated_params
 from ..paths import REPO_DIR
-from ..types import MetanetParams, TrafficData, space_vec, time_space
+from ..types import MetanetParams, TrafficData, space_vec, time_space, NamedTuple
 
 @dataclass(frozen=True)
 class DatasetMeta:
@@ -20,12 +20,12 @@ _DATASETS: dict[str, DatasetMeta] = {
 
 @dataclass(frozen=True)
 class Scenario:
-    spec: ScenarioConfig
-    traffic: TrafficData
+  spec: ScenarioConfig
+  traffic: TrafficData
 
 def smooth_inflow(inflow: np.ndarray, window_size: int = 2) -> np.ndarray:
-    from scipy.ndimage import uniform_filter1d
-    return uniform_filter1d(inflow, window_size, axis=0, mode="nearest", output=np.float64)
+  from scipy.ndimage import uniform_filter1d
+  return uniform_filter1d(inflow, window_size, axis=0, mode="nearest", output=np.float64)
 
 def prepare_traffic_data(raw_density: time_space, raw_flow: time_space, lanes: space_vec,
     *, initial_step: int = 0, smoothing_window: int | None = 2) -> TrafficData:
@@ -60,7 +60,6 @@ def prepare_traffic_data(raw_density: time_space, raw_flow: time_space, lanes: s
 
   return TrafficData(density, flow, velocity, lanes, inflow, downstream, 
                      density[initial_step].copy(), velocity[initial_step].copy())
-
 
 def load_scenario(dataset: str, date: str) -> Scenario:
     try: meta = _DATASETS[dataset]

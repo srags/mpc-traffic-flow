@@ -129,7 +129,6 @@ def load_result(output_dir: Path) -> RunResult:
             ),
         )
 
-
 def load_runs(dataset: str, date: str, calibration: CalRef,
     study: StudyChoice = None, where: Callable[[MPCConfig], bool] | None = None
 ) -> list[RunResult]:
@@ -146,4 +145,11 @@ def load_runs(dataset: str, date: str, calibration: CalRef,
             results.append(result)
 
     return results
+
+def load_some_run(dataset: str, date: str, calibration: CalRef,
+    study: StudyChoice = None, where: Callable[[MPCConfig], bool] | None = None
+) -> RunResult:
+    """Load a single saved run matching the requested configuration."""
+    runs = load_runs(dataset, date, calibration=calibration, study=study, where=where)
+    return runs[0]
 

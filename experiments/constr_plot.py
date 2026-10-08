@@ -26,24 +26,24 @@ import re
 import sys
 
 import numpy as np
-import matplotlib as mpl
 import matplotlib.pyplot as plt
+from tabulate import tabulate
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO, "src"))
 
+from traffic_flow.results.console import colored
+from traffic_flow.pipeline import init_state
 from traffic_flow.results.plots import Plotter
 
-from traffic_flow.config import CalSource
-from traffic_flow.paths import REPO_DIR
-from traffic_flow.results.i24 import (                    # noqa: E402
-    L, time_step,
-    load_day_data, get_ff_tts,
-)
+from traffic_flow.inputs.scenario import load_params, load_scenario
+from traffic_flow.config import CalSource, CalRef
+from traffic_flow.paths import REPO_DIR, cut_repo
+from traffic_flow.results.i24 import L, time_step, get_ff_tts
 from traffic_flow.model.simulation import METANET_Simulator  # noqa: E402
 
 DATE = "11_30"
-SWEEP_ROOT = REPO_DIR / "results" / "i24" / f"i24_{DATE}" / CalSource.FIXED_RAMPS
+SWEEP_ROOT = REPO_DIR / "results_bu" / "i24" / f"i24_{DATE}" / CalSource.FIXED_RAMPS
 SAVE_PATH = REPO_DIR / "figs" / "i24_constraints.png"
 HEATMAP_SAVE_PATH = REPO_DIR / "figs" / "i24_safety_heatmap.png"
 
@@ -60,43 +60,35 @@ MAX_SPEED_LB = 120      # caps the x axis of panel (b), in km/hr
 MAX_TEMP = 10          # caps the x axis of panel (c), the temporal curve
 MAX_SPAT = 10          # caps the x axis of panel (d), the spatial curve
 
-TEXT_FONTSIZE = 18
 LINE_COLOR = "#2b6b4f"
 FILL_COLOR = "#4e9858"
 MAXLINE_COLOR = "#cf2e1c"
-
 
 # ── Baseline ─────────────────────────────────────────────────────────────────
 
 def load_baseline(date=DATE):
     """Uncontrolled delay for `date`, against which every sweep run is scored."""
-    day = load_day_data(date)
-    params = day["static_params"]
-    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=day["lane_dict"], real_data=True)
-    _, tts_base = sim.run(day["data_inflow"], day["ds_density_norm"], day["init_state"])
+    scenario = load_scenario("i24", date)
+    traffic = scenario.traffic
+    params = load_params(scenario, CalRef(CalSource.FIXED_RAMPS, interval=None))
+    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=dict(enumerate(traffic.lanes)), real_data=True)
+    _, tts_base = sim.run(traffic.inflow, traffic.downstream_density, init_state(traffic))
     v_free = params["v_free"]
-    ff_ttt = get_ff_tts(day["data_inflow"], time_step, L,
-                        np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
-    return day, params, tts_base - ff_ttt, ff_ttt
+    ff_ttt = get_ff_tts(traffic.inflow, time_step, L, np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
+    return scenario, params, tts_base - ff_ttt, ff_ttt
 
-
-def is_fallback(vsl):
-    """True if this run is the do-nothing fallback saved after solver failure."""
-    return bool(np.all(vsl == 150.0))
-
-
-def cc_for(path, day, params, delay_base, ff_ttt):
+def cc_for(path, scenario, params, delay_base, ff_ttt):
     """Controllable congestion for one saved VSL run, or None if it failed."""
+    traffic = scenario.traffic
     vsl = np.load(path)
-    if is_fallback(vsl): return None
-    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=day["lane_dict"], real_data=False)
-    _, tts = sim.run(day["data_inflow"], day["ds_density_norm"], day["init_state"], vsl_speeds = vsl)
+    if (vsl == 150.0).all(): return None
+    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=dict(enumerate(traffic.lanes)), real_data=False)
+    _, tts = sim.run(traffic.inflow, traffic.downstream_density, init_state(traffic), vsl_speeds = vsl)
     return float(np.clip((delay_base - (tts - ff_ttt)) / delay_base * 100, 0, 100))
-
 
 # ── Sweep loaders ────────────────────────────────────────────────────────────
 
-def load_scalar_sweep(subdir, ctx, max_value=None):
+def load_scalar_sweep(subdir: str, ctx, max_value=None):
     """Sweeps keyed by a single integer, i.e. hold_length and speed_lb.
 
     `max_value` caps the swept parameter in that sweep's own units (time steps
@@ -107,17 +99,16 @@ def load_scalar_sweep(subdir, ctx, max_value=None):
     Returns (values, ccs, n_failed, n_capped) sorted by value, where both
     counts refer to the plotted range.
     """
-    path = f"{SWEEP_ROOT}/{subdir}"
+    path = SWEEP_ROOT / subdir
     out, failed, capped = [], 0, 0
     for fname in os.listdir(path):
         m = re.fullmatch(r"optimal_vsl_(\d+)\.npy", fname)
-        if not m:
-            continue
+        if not m: continue
         value = int(m.group(1))
         if max_value is not None and value > max_value:
             capped += 1
             continue
-        cc = cc_for(os.path.join(path, fname), *ctx)
+        cc = cc_for(path / fname, *ctx)
         if cc is None:
             failed += 1
             continue
@@ -127,22 +118,19 @@ def load_scalar_sweep(subdir, ctx, max_value=None):
     ccs = np.array([c for _, c in out])
     return values, ccs, failed, capped
 
-
-def load_safety_grid(ctx):
+def load_safety_grid(ctx) -> tuple[dict[tuple[float, float], float], int]:
     """Full (temporal, spatial) -> CC grid, excluding failed runs."""
-    path = f"{SWEEP_ROOT}/safety_sweep"
+    path = SWEEP_ROOT / "safety_sweep"
     grid, failed = {}, 0
     for fname in os.listdir(path):
         m = re.fullmatch(r"optimal_vsl_temp([\d.]+)_spat([\d.]+)\.npy", fname)
-        if not m:
-            continue
-        cc = cc_for(os.path.join(path, fname), *ctx)
+        if not m: continue
+        cc = cc_for(path / fname, *ctx)
         if cc is None:
             failed += 1
             continue
         grid[(float(m.group(1)), float(m.group(2)))] = cc
     return grid, failed
-
 
 def slice_grid(grid, axis, fixed_value, max_value=None):
     """One-dimensional slice through the safety grid.
@@ -171,12 +159,9 @@ def slice_grid(grid, axis, fixed_value, max_value=None):
     pts = sorted((key[vary], cc) for key, cc in in_range.items()
                  if np.isclose(key[keep], fixed_value))
     n_available = sum(1 for key in grid if np.isclose(key[keep], fixed_value))
-    print([v for v, _ in pts])
-    print([c for _, c in pts])
     return (np.array([0] + [v for v, _ in pts]),
             np.array([0] + [c for _, c in pts]),
-            fixed_value,
-            n_available - len(pts))
+            fixed_value, n_available - len(pts))
 
 
 def report_coverage(grid):
@@ -184,66 +169,33 @@ def report_coverage(grid):
     FIXED_SPATIAL / FIXED_TEMPORAL choices can be checked."""
     for axis, keep, label in (("temporal", 1, "spatial"), ("spatial", 0, "temporal")):
         counts = {}
-        for key in grid:
-            counts[key[keep]] = counts.get(key[keep], 0) + 1
+        for key in grid: counts[key[keep]] = counts.get(key[keep], 0) + 1
         summary = "  ".join(f"{v:g}:{n}" for v, n in sorted(counts.items()))
         print(f"  points per fixed {label} bound ({axis} curve): {summary}")
 
 
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
-def _panel(ax, x, y, xlabel, title, logx=False):
-    """One curve with shaded area and a horizontal line at the panel maximum."""
-    ax.plot(x, y, color=LINE_COLOR, linewidth=4, marker="o",
-            markersize=5, zorder=3)
-    ax.fill_between(x, 0, y, color=FILL_COLOR, alpha=0.25, zorder=2)
-
-    y_max = float(np.max(y))
-    ax.axhline(y_max, color=MAXLINE_COLOR, linestyle="--", linewidth=3,
-               zorder=4)
-    # ax.text(0.98, y_max, f" Max CC = {y_max:.1f}%", transform=ax.get_yaxis_transform(),
-    #         ha="right", va="bottom", color=MAXLINE_COLOR,
-    #         fontsize=TEXT_FONTSIZE - 6, fontname="Times New Roman",
-    #         fontweight="bold")
-
-    if logx:
-        ax.set_xscale("log")
-    ax.set_xlabel(xlabel, fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
-    ax.set_ylabel("Controllable congestion (%)", fontsize=TEXT_FONTSIZE - 2,
-                  fontname="Times New Roman")
-    ax.set_title(title, fontsize=TEXT_FONTSIZE - 2, fontname="Times New Roman")
-    ax.set_ylim(0, max(60, y_max * 1.2))
-    ax.set_xlim(0, float(np.max(x)))
-    ax.grid(which="both", linestyle="-", linewidth=0.5, alpha=0.6)
-    ax.set_axisbelow(True)
-    ax.tick_params(labelsize=TEXT_FONTSIZE - 6)
-    for lab in ax.get_xticklabels() + ax.get_yticklabels():
-        lab.set_fontname("Times New Roman")
-
-
 def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
-    original_font = mpl.rcParams["font.family"]
-    mpl.rcParams["font.family"] = "serif"
-    mpl.rcParams["font.serif"] = ["Times New Roman"]
-
     p = Plotter(2, 2, figsize=(13, 9))
-
-    _panel(p[0, 0], hold[0] * 10 / 60, hold[1],
-           "Hold length (min)", "(a) Update interval")
-    _panel(p[0, 1], speed[0], speed[1],
-           "Minimum speed limit (km/hr)", "(b) Minimum posted speed limit")
-    _panel(p[1, 0], temporal[0], temporal[1],
-           r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)",
-           rf"(c) Temporal smoothness ($\mathcal{{S}}_{{\mathrm{{spat}}}}$ = {temporal[2]:g} km/hr)")
-    _panel(p[1, 1], spatial[0], spatial[1],
-           r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
-           rf"(d) Spatial smoothness ($\mathcal{{S}}_{{\mathrm{{temp}}}}$ = {spatial[2]:g} km/hr)")
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    for i, param in enumerate([hold, speed, temporal, spatial]):
+        p[i].plot(*param, color=LINE_COLOR, linewidth=4, marker="o", markersize=5, zorder=3)
+        p[i].fill_between(param[0], 0, param[1], color=FILL_COLOR, alpha=0.25, zorder=2)
+        p[i].axhline(param[1].max(), color=MAXLINE_COLOR, linestyle="--", linewidth=3, zorder=4)
+        p[i] = {'xlim': (0, float(np.max(param[0]))), 'ylim': (0, max(60, param[1].max() * 1.2))}
+        p[i].grid(which="both", linestyle="-", linewidth=0.5, alpha=0.6)
+        p[i].set_axisbelow(True)
+    for i, (xtitle, title) in enumerate([
+        ("Hold length (min)", "(a) Update interval"), 
+        ("Minimum speed limit (km/hr)", "(b) Minimum posted speed limit"), 
+        (r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)",
+            f"(c) Temporal smoothness ($\\mathcal{{S}}_{{\\mathrm{{spat}}}}$ = {temporal[2]:g} km/hr)"),
+        (r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
+            f"(d) Spatial smoothness ($\\mathcal{{S}}_{{\\mathrm{{temp}}}}$ = {spatial[2]:g} km/hr)")
+    ]): p[i] = {'xlabel': xtitle, 'ylabel': "Controllable congestion (%)", 'title': title}
+    p.fig.tight_layout()
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print(f"\nFigure saved to: {save_path}")
-    mpl.rcParams["font.family"] = original_font
-    return p.fig
+    print(f"\nFigure saved to: {colored(cut_repo(save_path), 'green', 'bold')}")
 
 
 def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3):
@@ -258,22 +210,15 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
     """
     import copy
 
-    original_font = mpl.rcParams["font.family"]
-    mpl.rcParams["font.family"] = "serif"
-    mpl.rcParams["font.serif"] = ["Times New Roman"]
-
     temps = sorted({t for t, _ in grid})
     spats = sorted({s for _, s in grid})
     if min_points:
-        temps = [t for t in temps
-                 if sum(1 for k in grid if k[0] == t) >= min_points]
-        spats = [s for s in spats
-                 if sum(1 for k in grid if k[1] == s) >= min_points]
+        temps = [t for t in temps if sum(1 for k in grid if k[0] == t) >= min_points]
+        spats = [s for s in spats if sum(1 for k in grid if k[1] == s) >= min_points]
         grid = {k: v for k, v in grid.items() if k[0] in temps and k[1] in spats}
 
     values = np.full((len(temps), len(spats)), np.nan)
-    for (t, s), cc in grid.items():
-        values[temps.index(t), spats.index(s)] = cc
+    for (t, s), cc in grid.items(): values[temps.index(t), spats.index(s)] = cc
     masked = np.ma.masked_invalid(values)
 
     cmap = copy.copy(plt.get_cmap("viridis"))
@@ -289,10 +234,6 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
             'xlabel': r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
             'ylabel': r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)"}
 
-    p[0].tick_params(labelsize=TEXT_FONTSIZE - 2 )
-    for lab in p[0].get_xticklabels() + p[0].get_yticklabels():
-        lab.set_fontname("Times New Roman")
-
     if annotate:
         threshold = 0.55 * float(masked.max())
         for i in range(len(temps)):
@@ -300,51 +241,35 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
                 if masked.mask[i, j]:
                     continue
                 p[0].text(j, i, f"{values[i, j]:.0f}", ha="center", va="center",
-                        fontsize=TEXT_FONTSIZE - 4, fontname="Times New Roman",
                         color="white" if values[i, j] < threshold else "black")
-
-    cbar = p.fig.colorbar(im, ax=p[0], fraction=0.046, pad=0.02, label="Controllable congestion (%)")
-    cbar.ax.tick_params(labelsize=TEXT_FONTSIZE - 2)
-    for lab in cbar.ax.get_yticklabels():
-        lab.set_fontname("Times New Roman")
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    p.fig.colorbar(im, ax=p[0], fraction=0.046, pad=0.02, label="Controllable congestion (%)")
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print(f"Heatmap saved to: {save_path}")
-    mpl.rcParams["font.family"] = original_font
+    print(f"Heatmap saved to: {colored(cut_repo(save_path), 'bold', 'green')}")
     return p.fig
 
 
 if __name__ == "__main__":
-    day, params, delay_base, ff_ttt = load_baseline()
-    ctx = (day, params, delay_base, ff_ttt)
-    print(f"Baseline {DATE}: uncontrolled delay {delay_base:.2f} veh-hrs\n")
+    scenario, params, delay_base, ff_ttt = ctx = load_baseline()
+    print(f"Baseline {DATE}: uncontrolled delay {delay_base:.2f} veh-hrs")
 
     hold_x, hold_y, hold_failed, _ = load_scalar_sweep("hold_length", ctx)
-    print(f"hold_length: {len(hold_x)} runs used, {hold_failed} excluded (solver fallback)")
-
-    speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep(
-        "speed_lb", ctx, MAX_SPEED_LB)
-    print(f"speed_lb:    {len(speed_x)} runs used, {speed_failed} excluded (solver fallback)"
-          + ("" if MAX_SPEED_LB is None else
-             f", {speed_capped} beyond cap U_min <= {MAX_SPEED_LB:g}"))
-
+    speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep("speed_lb", ctx, MAX_SPEED_LB)
     grid, grid_failed = load_safety_grid(ctx)
-    print(f"safety_sweep: {len(grid)} runs used, {grid_failed} excluded (solver fallback)")
+
     report_coverage(grid)
 
-    temp_x, temp_y, temp_fixed, temp_capped = slice_grid(
-        grid, "temporal", FIXED_SPATIAL, MAX_TEMP)
-    spat_x, spat_y, spat_fixed, spat_capped = slice_grid(
-        grid, "spatial", FIXED_TEMPORAL, MAX_SPAT)
+    temp_x, temp_y, temp_fixed, temp_capped = slice_grid(grid, "temporal", FIXED_SPATIAL, MAX_TEMP)
+    spat_x, spat_y, spat_fixed, spat_capped = slice_grid(grid, "spatial", FIXED_TEMPORAL, MAX_SPAT)
 
-    print(f"\n(c) temporal curve at S_spat = {temp_fixed:g}: {len(temp_x)} points"
-          + ("" if MAX_TEMP is None else
-             f", capped at S_temp <= {MAX_TEMP:g} ({temp_capped} excluded)"))
-    print(f"(d) spatial  curve at S_temp = {spat_fixed:g}: {len(spat_x)} points"
-          + ("" if MAX_SPAT is None else
-             f", capped at S_spat <= {MAX_SPAT:g} ({spat_capped} excluded)"))
+    print(tabulate(headers=["Constraint", "Runs Used", "Excluded", f"Capped at"],
+            tablefmt="grid", tabular_data=[
+                ["hold_length", len(hold_x), hold_failed, None],
+                ["speed_lb", len(speed_x), speed_failed, f"(U_min <= {MAX_SPEED_LB:g}) {speed_capped}"],
+                ["safety_sweep", len(grid), grid_failed, None],
+                [f"temporal (S_spat = {temp_fixed})", len(temp_x), None, f"(S_temp <= {MAX_TEMP:g}) {temp_capped}"],
+                [f"spatial (S_temp = {spat_fixed})", len(spat_x), None, f"(S_spat <= {MAX_SPAT:g}) {spat_capped}"]
+            ]))
 
-    plot((hold_x, hold_y), (speed_x, speed_y),
+    plot((hold_x * 10 / 60, hold_y), (speed_x, speed_y),
          (temp_x, temp_y, temp_fixed), (spat_x, spat_y, spat_fixed))
     plot_heatmap(grid)

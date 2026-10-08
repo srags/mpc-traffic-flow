@@ -12,25 +12,26 @@ Run from anywhere:
 
 Saves to figs/i24_tsd.png and prints the delay / CC figures for each row.
 """
-
-import os
 import sys
 
 import numpy as np
-import matplotlib as mpl
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "src"))
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from traffic_flow.inputs.scenario import load_params, load_scenario
+from traffic_flow.paths import REPO_DIR, cut_repo
+
+from traffic_flow.results.console import colored
+from traffic_flow.results.io import load_runs
 from traffic_flow.results.plots import Plotter
 
-from traffic_flow.config import CalSource
-from traffic_flow.paths import REPO_DIR
+from traffic_flow.config import CalRef, CalSource
 from traffic_flow.results.i24 import (                    # noqa: E402
-    L, time_step,
-    load_day_data, get_ff_tts, format_date_label,
+    L, time_step, get_ff_tts, format_date_label,
 )
 from traffic_flow.model.simulation import METANET_Simulator # noqa: E402
+from traffic_flow.pipeline import init_state
 
 SAVE_PATH = REPO_DIR / "figs" / "i24_tsd.png"
 
@@ -41,45 +42,42 @@ CONTROL_ZONE_START_KM = 2 * L
 SHOW_OBSERVED = True
 TEXT_FONTSIZE = 18
 
-
 def run_day(date):
     """Observed, uncontrolled and controlled velocity fields for one date."""
-    day = load_day_data(date)
-    params = day["static_params"]
+    scenario = load_scenario("i24", date)
+    spec, traffic = scenario.spec, scenario.traffic
+    params = load_params(scenario, CalRef(CalSource.FIXED_RAMPS, interval=None))
 
-    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=day["lane_dict"], real_data=True)
-    _, v_sim, _, tts_sim = sim.run_with_history(day["data_inflow"], day["ds_density_norm"], day["init_state"])
+    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=dict(enumerate(traffic.lanes)), real_data=True)
+    _, v_sim, _, tts_sim = sim.run_with_history(traffic.inflow, traffic.downstream_density, init_state(traffic))
 
-    vsl_path = REPO_DIR / "results" / "i24" / f"i24_{date}" / CalSource.FIXED_RAMPS / "optimal_vsl.npy"
-    vsl = np.load(vsl_path)
+    runs = load_runs("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
+    assert len(runs) == 1, f"Expected 1 run for date {date}, got {len(runs)}"
+    vsl = runs[0].optimization.vsl
 
     sim.real_data = False
-    _, v_opt, _, tts_opt = sim.run_with_history(day["data_inflow"], day["ds_density_norm"], day["init_state"], vsl_speeds=vsl)
+    _, v_opt, _, tts_opt = sim.run_with_history(traffic.inflow, traffic.downstream_density, init_state(traffic), vsl_speeds=vsl)
 
     v_free = params["v_free"]
-    ff_ttt = get_ff_tts(day["data_inflow"], time_step, L,
-                        np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
+    ff_ttt = get_ff_tts(traffic.inflow, time_step, L, np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
     delay, opt_delay = tts_sim - ff_ttt, tts_opt - ff_ttt
     cc = float(np.clip((delay - opt_delay) / delay * 100, 0, 100))
 
     return {
         "date": date,
         "label": format_date_label(date),
-        "observed": day["v_trimmed"],
+        "observed": traffic.velocity,
         "no_control": v_sim[:-1, :],
         "controlled": v_opt[:-1, :],
         "tts": tts_sim,
         "delay": delay,
         "opt_delay": opt_delay,
         "cc": cc,
-        "num_segments": day["num_segments"],
+        "num_segments": spec.num_segments,
     }
 
 
 def plot(results, save_path=SAVE_PATH):
-    original_font = mpl.rcParams["font.family"]
-    mpl.rcParams["font.family"] = "serif"
-    mpl.rcParams["font.serif"] = ["Times New Roman"]
 
     panels = ([("observed", "Observed")] if SHOW_OBSERVED else []) + [
         ("no_control", "No control"),
@@ -105,40 +103,28 @@ def plot(results, save_path=SAVE_PATH):
                        linestyle="--", linewidth=2.5)
 
             head = f"({panel_labels[row * n_cols + col]}) {res['label']}, {title}"
-            if key == "no_control":
-                head += f"\nDelay = {res['delay']:.0f} veh-hrs"
-            elif key == "controlled":
-                head += (f"\nDelay = {res['opt_delay']:.0f} veh-hrs, "
-                         f"CC = {res['cc']:.0f}\\%".replace("\\%", "%"))
-            ax.set_title(head, fontsize=TEXT_FONTSIZE - 5,
-                         fontname="Times New Roman")
+            if key == "no_control": head += f"\nDelay = {res['delay']:.0f} veh-hrs"
+            elif key == "controlled": head += (f"\nDelay = {res['opt_delay']:.0f} veh-hrs, "
+                                                f"CC = {res['cc']:.0f}\\%".replace("\\%", "%"))
+            ax.set_title(head, fontsize=TEXT_FONTSIZE - 5)
 
             if col == 0:
-                ax.set_ylabel("Distance (km)", fontsize=TEXT_FONTSIZE - 3,
-                              fontname="Times New Roman")
+                ax.set_ylabel("Distance (km)", fontsize=TEXT_FONTSIZE - 3)
             if row == n_rows - 1:
-                ax.set_xlabel("Time (min)", fontsize=TEXT_FONTSIZE - 3,
-                              fontname="Times New Roman")
+                ax.set_xlabel("Time (min)", fontsize=TEXT_FONTSIZE - 3)
 
             ax.set_xticks(np.arange(0, duration_min + 1, 15))
             ax.set_yticks(np.arange(0, corridor_km + 0.1, 1))
             ax.tick_params(labelsize=TEXT_FONTSIZE - 7)
-            for lab in ax.get_xticklabels() + ax.get_yticklabels():
-                lab.set_fontname("Times New Roman")
 
     p.fig.subplots_adjust(right=0.89, hspace=0.32, wspace=0.08)
     cbar_ax = p.fig.add_axes((0.91, 0.12, 0.015, 0.76))
     cbar = p.fig.colorbar(im, cax=cbar_ax)
-    cbar.set_label("Velocity (km/hr)", fontsize=TEXT_FONTSIZE - 3,
-                   fontname="Times New Roman")
+    cbar.set_label("Velocity (km/hr)", fontsize=TEXT_FONTSIZE - 3)
     cbar.ax.tick_params(labelsize=TEXT_FONTSIZE - 7)
-    for lab in cbar.ax.get_yticklabels():
-        lab.set_fontname("Times New Roman")
 
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print(f"\nFigure saved to: {save_path}")
-    mpl.rcParams["font.family"] = original_font
+    print(f"Figure saved to: {colored(cut_repo(save_path), 'bold', 'green')}")
     return p.fig
 
 

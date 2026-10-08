@@ -1,7 +1,7 @@
 
 line plot of controllable congestion coverage
 
-ideas: incorporating dynamic callibtarion into optimziation
+ideas: incorporating dynamic callibtarion into optimziation **
 
 1. refactor, understand pyomo
 2. latex documentation for the solvers
@@ -16,3 +16,17 @@ calibration -> mpc
 improve calibration
 
 look into other optimizations that can be done instead of vsl?
+
+
+
+frontend:
+pg17
+make sure I_24_table. work
+look at delay instead of TTS (minus free flow travel time)
+average for the segments
+per-segments
+toy network 
+day selection
+
+backend:
+dynamic calibration
