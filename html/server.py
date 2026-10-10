@@ -23,16 +23,17 @@ REPO_ROOT = SITE_ROOT.parent
 RESULTS_ROOT = (REPO_ROOT / "results").resolve()
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from traffic_flow.results.io import load_result  # noqa: E402
+from traffic_flow.results.io import load_npz  # noqa: E402
+from traffic_flow.results.analysis import get_ff_tts  # noqa: E402
 from traffic_flow.types import RunResult  # noqa: E402
 
-# Wall-clock origin is not saved in run.npz. Other datasets use elapsed time.
+# Wall-clock origin is not saved in the bundle. Other datasets use elapsed time.
 START_HOURS = {"i24": 7.5}
 
 
 def _safe_scenario_path(scenario_id: str) -> Path:
     path = (RESULTS_ROOT / scenario_id).resolve()
-    if Path(scenario_id).is_absolute() or RESULTS_ROOT not in path.parents or path.name != "run.npz":
+    if Path(scenario_id).is_absolute() or RESULTS_ROOT not in path.parents or path.suffix != ".npz":
         raise ValueError("Invalid scenario path")
     if not path.is_file():
         raise FileNotFoundError("Scenario does not exist")
@@ -43,8 +44,8 @@ def _scenario_summary(run: RunResult, relative: Path) -> dict[str, str]:
     spec, config = run.scenario.spec, run.config
     # The file supplies geometry/settings; folders are only display labels.
     parts = relative.parts
-    context = "/".join(parts[2:-3]) if len(parts) >= 6 else "saved run"
-    run_id = relative.parent.name.rsplit("__", 1)[-1][:8]
+    context = "/".join(parts[2:-1]) or "saved run"
+    run_id = relative.stem
     options = [f"min {config.speed_lb:g}", f"hold {config.hold_length}"]
     if config.safety_temporal is not None:
         options.append(f"temporal {config.safety_temporal:g}")
@@ -69,21 +70,24 @@ def _scenario_summary(run: RunResult, relative: Path) -> dict[str, str]:
     }
 
 
-def _travel_time_curve(run: RunResult) -> dict[str, object]:
-    """TTT of the revealed controlled prefix plus the remaining baseline.
+def _delay_curve(run: RunResult) -> dict[str, object]:
+    """TTT of the displayed mix minus one fixed free-flow TTT.
 
-    Use full-precision saved states, including queue and the terminal row.
-    The terminal contribution switches with the final displayed interval, so
-    cutoff 0/T exactly matches the saved baseline/controlled total. This is
+    Use full-precision saved states and preserve the saved TTT convention.
+    Any terminal contribution switches with the final displayed interval, so
+    cutoff 0/T matches the saved baseline/controlled total minus free flow. This is
     an accounting of the mixed display, not a new partial-policy simulation.
     """
     spec, traffic = run.scenario.spec, run.scenario.traffic
     baseline, controlled = run.optimization.baseline, run.optimization.controlled
     costs = []
     for simulation in (baseline, controlled):
-        cost = spec.time_step * (
-            spec.L * (simulation.density @ traffic.lanes) + simulation.queue.reshape(-1)
-        )
+        road_cost = spec.time_step * spec.L * (simulation.density @ traffic.lanes)
+        cost = road_cost + spec.time_step * simulation.queue.reshape(-1)
+        if not np.isclose(cost.sum(), simulation.total_travel_time, rtol=1e-9, atol=1e-8):
+            # Current run_with_history omits terminal road occupancy, but keeps
+            # the full queue sum. Older saved runs included both terminal terms.
+            cost[-1] -= road_cost[-1]
         if not np.isclose(cost.sum(), simulation.total_travel_time, rtol=1e-9, atol=1e-8):
             raise ValueError("Saved travel time disagrees with the saved density/queue histories")
         costs.append(cost)
@@ -92,10 +96,20 @@ def _travel_time_curve(run: RunResult) -> dict[str, object]:
     increments[-1] += difference[-1]
     curve = baseline.total_travel_time + np.r_[0.0, np.cumsum(increments)]
     curve[-1] = controlled.total_travel_time  # Remove floating-point summation drift only.
+    # Match the current Python reports, including their dynamic-speed convention.
+    v_free = np.asarray(run.params["v_free"])
+    if v_free.ndim == 2:
+        v_free = v_free.max(axis=0)
+    if v_free.shape != (spec.num_segments,) or not np.isfinite(v_free).all() or np.any(v_free <= 0):
+        raise ValueError("Saved free-flow speeds must be positive and finite, one per segment")
+    free_flow = float(get_ff_tts(traffic.inflow, spec.time_step, spec.L, v_free))
+    if not np.isfinite(free_flow):
+        raise ValueError("Saved inputs produce a non-finite free-flow travel time")
     return {
-        "baseline": baseline.total_travel_time,
-        "controlled": controlled.total_travel_time,
-        "byCutoff": curve.tolist(),
+        "baseline": baseline.total_travel_time - free_flow,
+        "controlled": controlled.total_travel_time - free_flow,
+        "byCutoff": (curve - free_flow).tolist(),
+        "freeFlow": free_flow,
     }
 
 
@@ -109,7 +123,7 @@ def load_scenario(scenario_id: str) -> dict[str, object]:
 def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) -> dict[str, object]:
     # Fingerprinting invalidates cached data when save_result replaces a bundle.
     path = _safe_scenario_path(scenario_id)
-    run = load_result(path.parent)
+    run = load_npz(path)
     spec, traffic = run.scenario.spec, run.scenario.traffic
     result = run.optimization
     steps, segments = spec.time_steps, spec.num_segments
@@ -152,7 +166,7 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) ->
         **display(result.controlled),
         "vsl": np.round(result.vsl, 3).tolist(),
         "baseline": display(result.baseline),
-        "travelTime": _travel_time_curve(run),
+        "delay": _delay_curve(run),
         "config": config,
         "metadata": {
             "timeSteps": steps,
@@ -168,7 +182,9 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) ->
 
 def discover_scenarios() -> list[dict[str, str]]:
     scenarios = []
-    for path in sorted(RESULTS_ROOT.rglob("run.npz")):
+    for path in sorted(RESULTS_ROOT.rglob("*.npz")):
+        if not path.is_file():
+            continue
         try:
             payload = load_scenario(path.relative_to(RESULTS_ROOT).as_posix())
             scenarios.append(payload["scenario"])

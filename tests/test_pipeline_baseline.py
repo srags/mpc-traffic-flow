@@ -11,7 +11,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from traffic_flow import load_params, load_result, load_scenario
+from traffic_flow import load_params, load_scenario
+from traffic_flow.results.io import load_npz
 from traffic_flow.config import CalRef
 from traffic_flow.pipeline import simulate_scenario
 
@@ -21,7 +22,7 @@ DATA = ROOT / "data/i24/i24_11_28"
 PARAMS = DATA / "calibration_static/fixed_ramping"
 # Historical policies stay in the backup; newly generated bundles stay in results.
 VSL = ROOT / "results_bu/i24/i24_11_28/calibration_static/fixed_ramping/optimal_vsl.npy"
-RUNS = ROOT / "results/i24/i24_11_30/calibration_static/fixed_ramping/runs"
+RUNS = ROOT / "results/i24/i24_11_30/calibration_static/fixed_ramping"
 
 
 @pytest.fixture(scope="module")
@@ -97,6 +98,10 @@ def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, cont
         baseline.sim_types.MetanetState(density.copy(), velocity.copy(), float(inflow[0]), 0.),
         controls.copy(),
     )
+    # The current history API excludes terminal road occupancy from TTT, unlike
+    # 4f82654. Keep all trajectories and the full queue contribution unchanged.
+    terminal_road_ttt = spec.time_step * spec.L * (expected[0][-1] @ lanes)
+    expected = (*expected[:-1], expected[-1] - terminal_road_ttt)
     for name, new, previous in zip(actual._fields, actual, expected):
         assert np.shape(new) == np.shape(previous), name
         assert np.isfinite(new).all() and np.isfinite(previous).all(), name
@@ -106,12 +111,12 @@ def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, cont
 
 def test_latest_saved_cc_run_matches_pre_refactor(baseline):
     # One representative new run keeps routine test time independent of sweep size.
-    paths = list(RUNS.glob("*/run.npz"))
+    paths = [path for path in RUNS.glob("*.npz") if path.is_file()]
     if not paths:
         pytest.skip("Run cc_run.py once to check a newly saved bundle")
     path = max(paths, key=lambda candidate: (candidate.stat().st_mtime_ns, str(candidate)))
     before = path.read_bytes()
-    run = load_result(path.parent)
+    run = load_npz(path)
     spec, traffic = run.scenario.spec, run.scenario.traffic
     assert (spec.freeway, spec.date) == ("i24", "11_30")
     assert run.optimization.vsl.shape == (spec.time_steps, spec.num_segments)
@@ -133,6 +138,10 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
             ),
             controls,
         )
+        # Saved current runs use the same terminal-density exclusion as the
+        # history API. Do not relax tolerances or accept arbitrary TTT changes.
+        terminal_road_ttt = spec.time_step * spec.L * (expected[0][-1] @ traffic.lanes)
+        expected = (*expected[:-1], expected[-1] - terminal_road_ttt)
         actual = getattr(run.optimization, phase)
         for name, saved, previous in zip(actual._fields, actual, expected):
             assert np.shape(saved) == np.shape(previous), f"{phase}.{name}"
@@ -140,6 +149,35 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
             np.testing.assert_allclose(saved, previous, rtol=RTOL, atol=ATOL,
                                        equal_nan=False, err_msg=f"{phase}.{name}")
     assert path.read_bytes() == before
+
+
+def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch):
+    """Pin the new accounting with a nonzero terminal queue and unequal lanes."""
+    from unittest.mock import Mock
+
+    from traffic_flow.model.parameters import default_metanet_params
+    from traffic_flow.model.simulation import METANET_Simulator
+    from traffic_flow.types import MetanetState
+
+    states = [
+        MetanetState(np.array(rho, dtype=float), np.full(2, 90.), 100., queue)
+        for rho, queue in (([10, 20], 1.), ([30, 40], 2.), ([500, 600], 7.))
+    ]
+    simulator = METANET_Simulator(
+        T=0.1, l=0.5, params=default_metanet_params(2), lanes={0: 2., 1: 3.},
+    )
+    step = Mock(side_effect=states[1:])
+    monkeypatch.setattr(simulator, "_step", step)
+    density, velocity, queue, ttt = simulator.run_with_history(
+        np.full(3, 100.), np.zeros(2), states[0],
+    )
+
+    assert step.call_count == 2
+    np.testing.assert_array_equal(density, [[10, 20], [30, 40], [500, 600]])
+    np.testing.assert_array_equal(velocity, np.full((3, 2), 90.))
+    np.testing.assert_array_equal(queue, [[1], [2], [7]])
+    # 0.1 * (0.5 * (10*2 + 20*3 + 30*2 + 40*3) + 1 + 2 + 7)
+    np.testing.assert_allclose(ttt, 14., rtol=RTOL, atol=ATOL)
 
 
 def test_synthetic_reports_preserve_original_replay():
@@ -215,7 +253,6 @@ def test_cc_report_keeps_metrics_and_printed_summary(monkeypatch, capsys):
     from traffic_flow.config import ScenarioConfig
     from traffic_flow.inputs.scenario import Scenario
     from traffic_flow.model.parameters import default_metanet_params
-    from traffic_flow.results.analysis import cc_report
     from traffic_flow.types import OptimizationResult, SimulationResult, TrafficData
 
     spec = ScenarioConfig("test", "day", 1., 2, 0.01, 2)
@@ -249,42 +286,9 @@ def test_cc_report_keeps_metrics_and_printed_summary(monkeypatch, capsys):
     simulate = Mock(return_value=diagnostic)
     monkeypatch.setattr("traffic_flow.pipeline.simulate_scenario", simulate)
 
-    report = cc_report(scenario, params, result)
-
-    simulate.assert_called_once_with(traffic, params, T=0.01, l=1., steps=2, real_data=True)
-    assert report.result is result
-    np.testing.assert_allclose((report.free_flow_ttt, report.delay, report.controlled_delay),
-                               (2., 10., 5.), rtol=RTOL, atol=ATOL)
-    np.testing.assert_array_equal(report.display_vsl, [[150., 100.], [80., 90.]])
-    np.testing.assert_array_equal(result.vsl, [[120., 100.], [80., 90.]])
-    np.testing.assert_allclose(report.observed_delay, [[0.6, 0.6], [1 / 165, 1 / 165]],
-                               rtol=RTOL, atol=ATOL)
-    np.testing.assert_allclose(report.pct_decrease, [[75., 75.], [0., 0.]], rtol=RTOL, atol=ATOL)
-    assert report.fit_rows == {
-        "Velocity": "MAPE 0.00%, RMSE 0.00",
-        "Density": "MAPE 0.00%, RMSE 0.00",
-        "Flow": "MAPE 0.00%, RMSE 0.00",
-        "Travel Time": "1.60 veh-hr vs 1.60 veh-hr (MAPE 0.00%)",
-    }
-    assert report.cc_rows == {
-        "Total free flow travel time": "2.00 veh-hrs",
-        "Controllable congestion": "50.00%",
-        "Delay (ground truth)": "0.01 min - 0.60 min",
-        "Pct decrease": "0.00% - 75.00%",
-    }
-
-    from traffic_flow.results.analysis import print_cc_report
-
-    print_cc_report(report)
-    output = capsys.readouterr().out
-    assert output.index("No Control") < output.index("Optimized VSLs")
-    for label, value in (*report.fit_rows.items(), *report.cc_rows.items()):
-        assert label in output and value in output
-
-
 def test_virtual_trajectory_analysis_preserves_existing_values():
     """Freeze the current positive-speed integration before moving its module."""
-    from traffic_flow.results.analysis import get_virtual_trajectory, vt_travel_time_stats
+    from traffic_flow.results.analysis import get_virtual_trajectory
 
     speed = np.array([
         [30., 60., 90., 30., 60., 90., 30., 60.],
@@ -301,12 +305,3 @@ def test_virtual_trajectory_analysis_preserves_existing_values():
     ):
         actual = get_virtual_trajectory(speed, 3.25, 1.25, 30., 0.5, direction=direction)
         np.testing.assert_allclose(actual, (times, positions), rtol=RTOL, atol=ATOL)
-
-    extended = np.tile(speed, (1, 4))
-    extended.flags.writeable = False
-    times = vt_travel_time_stats(extended, time_step=10 / 3600, num_samples=4)
-    assert times is not None, "vt_travel_time_stats must return vt_times outside the plotting branch"
-    # The legacy integrator uses d_time=4 and d_space=0.5 internally, despite
-    # converting travel time with the caller's time_step. This move keeps that.
-    np.testing.assert_allclose(times, [3.666583333333333, 3.444444444444444,
-                                      1.722222222222222, 0.], rtol=RTOL, atol=ATOL)

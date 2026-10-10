@@ -21,8 +21,8 @@ look into other optimizations that can be done instead of vsl?
 
 frontend:
 pg17
-make sure I_24_table. work
-look at delay instead of TTS (minus free flow travel time)
+make sure I_24_table. work DONE
+look at delay instead of TTS (minus free flow travel time) DONE
 average for the segments
 per-segments
 toy network 
@@ -30,3 +30,8 @@ day selection
 
 backend:
 dynamic calibration
+
+pipeline
+analysis DONE
+merge with main
+run_dir into collection_dir

@@ -12,3 +12,8 @@ src/__pycache__/
 
 run_nb.sh
 **.nbconvert.ipynb
+
+results_bu
+figs_bu
+experiments/archive
+experiments/old

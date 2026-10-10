@@ -16,7 +16,7 @@ from ..inputs.generation import generate_demand
 from ..model.parameters import default_metanet_params
 from ..model.simulation import METANET_Simulator
 from ..types import MetanetParams, MetanetState, OptimizationResult, SimulationResult
-from .analysis import get_ff_tts, get_num_veh
+from .analysis import get_ff_tts
 from .console import colored
 
 
@@ -105,7 +105,7 @@ def load_synthetic_results(
         ))
         results.append(SyntheticResult(
             config, peak, OptimizationResult(vsl, baseline, controlled),
-            float(get_num_veh(demand, config.time_step)),
+            float(demand.sum() * config.time_step),
             float(get_ff_tts(demand, config.time_step, config.total_distance, [float(v_free[0])])),
         ))
 

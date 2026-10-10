@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import StudyChoice, MPCConfig, ScenarioConfig, CalRef
-from ..paths import REPO_DIR, find_run_dirs
+from ..paths import REPO_DIR, find_npzs, collection_dir
 from ..types import (
     MetanetParams, OptimizationResult, RunResult,
     SimulationResult, TrafficData
@@ -16,7 +16,7 @@ from ..inputs.scenario import Scenario
 
 from tempfile import NamedTemporaryFile
 
-def save_result(result: RunResult, output_dir: Path) -> Path:
+def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file_name = "run") -> Path:
     """Save one complete run, replacing an existing bundle only after success."""
     settings = {field.name: getattr(result.config, field.name) for field in fields(result.config)}
     initialization = settings.pop("initialize_vsl")
@@ -51,8 +51,11 @@ def save_result(result: RunResult, output_dir: Path) -> Path:
     if any(array.dtype.hasobject for array in arrays.values()):
         raise ValueError("Run bundles cannot contain object arrays.")
 
-    output_dir = Path(output_dir)
-    path = output_dir / "run.npz"
+    output_dir = Path(collection_dir(
+        result.scenario.spec.freeway, result.scenario.spec.date, calibration=calibration, study=study
+    ))
+    
+    path = output_dir / f"{file_name}.npz"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     temporary: Path | None = None
@@ -69,9 +72,9 @@ def save_result(result: RunResult, output_dir: Path) -> Path:
     print(f"Saved to {colored(display, 'green')}")
     return path
 
-def load_result(output_dir: Path) -> RunResult:
+def load_npz(file_path: Path) -> RunResult:
     """Restore a complete run without reading source data or recomputing results."""
-    with np.load(Path(output_dir) / "run.npz", allow_pickle=False) as archive:
+    with np.load(Path(file_path), allow_pickle=False) as archive:
         metadata = json.loads(archive["metadata"].item())
         version = metadata.get("schema_version")
         if version != 1:
@@ -129,27 +132,27 @@ def load_result(output_dir: Path) -> RunResult:
             ),
         )
 
-def load_runs(dataset: str, date: str, calibration: CalRef,
-    study: StudyChoice = None, where: Callable[[MPCConfig], bool] | None = None
-) -> list[RunResult]:
+def load_results(dataset: str, date: str, calibration: CalRef,
+    study: StudyChoice = None, where: Callable[[MPCConfig], bool] | None = None, 
+    file_name: str = "*") -> list[RunResult]:
     """Load saved runs matching the requested configuration."""
     results = []
 
-    for directory in find_run_dirs(dataset, date, calibration=calibration, study=study):
-        result = load_result(directory)
+    for file_path in find_npzs(dataset, date, calibration=calibration, study=study, file_name=file_name):
+        result = load_npz(file_path)
         spec = result.scenario.spec
         if (spec.freeway, spec.date) != (dataset, date):
-            raise ValueError(f"Scenario metadata disagrees with directory: {directory / 'run.npz'}")
+            raise ValueError(f"Scenario metadata disagrees with directory: {file_path}")
 
         if where is None or where(result.config):
             results.append(result)
 
     return results
 
-def load_some_run(dataset: str, date: str, calibration: CalRef,
+def load_one_result(dataset: str, date: str, calibration: CalRef,
     study: StudyChoice = None, where: Callable[[MPCConfig], bool] | None = None
 ) -> RunResult:
     """Load a single saved run matching the requested configuration."""
-    runs = load_runs(dataset, date, calibration=calibration, study=study, where=where)
+    runs = load_results(dataset, date, calibration=calibration, study=study, where=where)
     return runs[0]
 

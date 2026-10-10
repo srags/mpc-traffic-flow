@@ -5,7 +5,7 @@ Literal aliases retain type checking for callers that still use string values.
 Dates, paths and numerical tuning values deliberately remain open-ended.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
 from typing import Literal, TypeAlias, TypedDict
@@ -73,6 +73,14 @@ class ScenarioConfig:
     time_step: hr
     time_steps: int
     start_time: hr = 0.0
+    
+    def to_mpc_config(self, **kwargs) -> "MPCConfig":
+        return replace(MPCConfig(
+            pred_horizon=45, control_horizon=5, hold_length=1,
+            speed_lb=0, v_fd_penalty=1e14,
+            control_zone=tuple(range(2, self.num_segments)),
+            init_fixed=150.0, verbose=True, tee=False,
+        ), **kwargs)
 
 @dataclass(frozen=True)
 class SyntheticConfig:
@@ -179,12 +187,3 @@ class CalibrationConfig:
 
     x0: CalibrationInitialGuess | None = None
     tee: bool = True
-
-def default_mpc_config(spec: ScenarioConfig) -> MPCConfig:
-    """The current cc_run settings, including its 150 km/hr fallback seed."""
-    return MPCConfig(
-        pred_horizon=45, control_horizon=5, hold_length=1,
-        speed_lb=0, v_fd_penalty=1e14,
-        control_zone=tuple(range(2, spec.num_segments)),
-        init_fixed=150.0, verbose=True, tee=False,
-    )

@@ -60,29 +60,29 @@ def calibrate(scenario: Scenario, config: CalibrationConfig) -> MetanetParams:
 
 
 def optimize(scenario: Scenario, params: MetanetParams, config: MPCConfig) -> RunResult:
-    """Optimize using independent snapshots of the supplied inputs."""
-    steps = scenario.spec.time_steps
-    num_segments = len(scenario.traffic.lanes)
-    assert 1 <= config.control_horizon <= config.pred_horizon, "Require 1 <= control_horizon <= pred_horizon"
-    assert config.pred_horizon <= steps, "Duration must cover at least one prediction horizon"
-    lanes = {i: float(count) for i, count in enumerate(scenario.traffic.lanes)}
-  
-    opt_horizon = steps + config.pred_horizon - config.control_horizon
+  """Optimize using independent snapshots of the supplied inputs."""
+  steps = scenario.spec.time_steps
+  num_segments = len(scenario.traffic.lanes)
+  assert 1 <= config.control_horizon <= config.pred_horizon, "Require 1 <= control_horizon <= pred_horizon"
+  assert config.pred_horizon <= steps, "Duration must cover at least one prediction horizon"
+  lanes = {i: float(count) for i, count in enumerate(scenario.traffic.lanes)}
 
-    from .solvers.mpc import mpc_find_vsl
-    
-    vsl = mpc_find_vsl(
-      opt_horizon,
-      np.pad(scenario.traffic.inflow, (0, max(0, opt_horizon + 1 - len(scenario.traffic.inflow))), mode="edge"),
-      np.pad(scenario.traffic.downstream_density, (0, max(0, opt_horizon + 1 - len(scenario.traffic.downstream_density))), mode="edge"),
-      lanes, params=params,
-      T=scenario.spec.time_step, l=scenario.spec.L,
-      num_segments=num_segments,
-      init_state=init_state(scenario.traffic),
-      **{field.name: getattr(config, field.name) for field in fields(config)}, # asdict but no deep copy
-    )
-    scenario, params, config = deepcopy((scenario, params, config))
-    return RunResult(scenario, params, config, optimization = evaluate(scenario, params, vsl))
+  opt_horizon = steps + config.pred_horizon - config.control_horizon
+
+  from .solvers.mpc import mpc_find_vsl
+  
+  vsl = mpc_find_vsl(
+    opt_horizon,
+    np.pad(scenario.traffic.inflow, (0, max(0, opt_horizon + 1 - len(scenario.traffic.inflow))), mode="edge"),
+    np.pad(scenario.traffic.downstream_density, (0, max(0, opt_horizon + 1 - len(scenario.traffic.downstream_density))), mode="edge"),
+    lanes, params=params,
+    T=scenario.spec.time_step, l=scenario.spec.L,
+    num_segments=num_segments,
+    init_state=init_state(scenario.traffic),
+    **{field.name: getattr(config, field.name) for field in fields(config)}, # asdict but no deep copy
+  )
+  scenario, params, config = deepcopy((scenario, params, config))
+  return RunResult(scenario, params, config, optimization = evaluate(scenario, params, vsl))
 
 def evaluate(scenario: Scenario, params: MetanetParams, vsl: time_space) -> OptimizationResult:
   """Replay a supplied policy against the 150 km/hr modeled-origin baseline.

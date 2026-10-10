@@ -293,14 +293,14 @@ input[type="range"] { width: 100%; accent-color: var(--accent); }
 .diagram-heading span { color: var(--muted); font-size: 10px; }
 .heatmap { display: block; width: 100%; height: 270px; cursor: crosshair; }
 
-.travel-card { margin-bottom: 16px; padding: 16px; }
-.travel-card .section-heading { margin-bottom: 0; flex-wrap: wrap; gap: 6px; }
-.travel-readout { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; }
-#travel-chart { display: block; width: 100%; height: 220px; cursor: crosshair; }
-.travel-key { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 11px; }
-.travel-key span { display: inline-flex; align-items: center; gap: 6px; }
-.travel-key b { font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
-.travel-key i { width: 20px; border-top: 1px dashed; }
+.delay-card { margin-bottom: 16px; padding: 16px; }
+.delay-card .section-heading { margin-bottom: 0; flex-wrap: wrap; gap: 6px; }
+.delay-readout { color: var(--accent); font-size: 12px; font-variant-numeric: tabular-nums; }
+#delay-chart { display: block; width: 100%; height: 220px; cursor: crosshair; }
+.delay-key { display: flex; flex-wrap: wrap; gap: 8px 20px; color: var(--muted); font-size: 11px; }
+.delay-key span { display: inline-flex; align-items: center; gap: 6px; }
+.delay-key b { font-weight: 500; color: var(--ink); font-variant-numeric: tabular-nums; }
+.delay-key i { width: 20px; border-top: 1px dashed; }
 .baseline-line { color: #98a2a8; }
 .controlled-line { color: var(--accent); }
 .chart-note { margin-top: 9px; color: var(--muted); font-size: 11px; line-height: 1.5; }

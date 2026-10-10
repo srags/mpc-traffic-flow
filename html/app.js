@@ -102,7 +102,7 @@ function setCutoff(cutoff) {
   updateRoad();
   updateStats();
   drawHeatmaps();
-  drawTravelChart();
+  drawSavingsChart();
   for (const canvas of $$("canvas[role='slider']")) {
     canvas.setAttribute("aria-valuenow", state.cutoff);
     canvas.setAttribute("aria-valuetext", `Controlled through ${formatClock(state.cutoff)}`);
@@ -150,11 +150,12 @@ function updateStats() {
   }
 
   // The server uses unrounded histories and includes the saved terminal state.
-  const travelTime = data.travelTime.byCutoff[cutoff];
-  const saved = data.travelTime.baseline - travelTime;
-  const percent = data.travelTime.baseline ? saved / data.travelTime.baseline * 100 : 0;
-  $("#travel-time").textContent = travelTime.toFixed(2);
-  $("#travel-readout").textContent = `${travelTime.toFixed(2)} veh-hr · ${Math.abs(saved).toFixed(2)} ${saved >= 0 ? "saved" : "added"} (${Math.abs(percent).toFixed(1)}%)`;
+  const delay = data.delay.byCutoff[cutoff];
+  const saved = data.delay.baseline - delay;
+  const percent = data.delay.baseline > 0 ? saved / data.delay.baseline * 100 : null;
+  const percentage = percent === null ? "" : ` · ${percent.toFixed(1)}% of baseline delay`;
+  $("#delay").textContent = delay.toFixed(2);
+  $("#delay-readout").textContent = `${saved.toFixed(2)} veh-hr saved${percentage}`;
   $("#mean-velocity").textContent = (velocitySum / (timeSteps * segments)).toFixed(1);
   $("#peak-density").textContent = peakDensity.toFixed(1);
   $("#peak-queue").textContent = peakQueue.toFixed(1);
@@ -302,9 +303,9 @@ function drawHeatmaps() {
   drawHeatmap($("#density-heatmap"), state.data.density, state.data.baseline.density, "density", state.data.scales.density);
 }
 
-function drawTravelChart() {
+function drawSavingsChart() {
   if (!state.data) return;
-  const canvas = $("#travel-chart");
+  const canvas = $("#delay-chart");
   const width = canvas.getBoundingClientRect().width;
   if (!width) return;
   const height = 220;
@@ -316,13 +317,14 @@ function drawTravelChart() {
   const margin = { left: 64, right: 16, top: 16, bottom: 44 };
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
-  const { byCutoff, baseline, controlled } = state.data.travelTime;
+  const { byCutoff: delays, baseline, controlled } = state.data.delay;
+  const byCutoff = delays.map((delay) => baseline - delay);
   const steps = state.data.metadata.timeSteps;
   // Fixed axes for the full run: revealing more points never rescales the plot.
   const low = Math.min(...byCutoff);
   const high = Math.max(...byCutoff);
   const padding = Math.max((high - low) * 0.12, Math.abs(high) * 0.005, 0.01);
-  const min = low - padding;
+  const min = low < 0 ? low - padding : 0;
   const max = high + padding;
   const x = (cutoff) => margin.left + cutoff / steps * plotWidth;
   const y = (value) => margin.top + (max - value) / (max - min) * plotHeight;
@@ -346,7 +348,7 @@ function drawTravelChart() {
   ctx.fillText("Controlled through (min)", margin.left + plotWidth / 2, height - 6);
 
   ctx.setLineDash([5, 5]);
-  for (const [value, color] of [[baseline, "#98a2a8"], [controlled, "#7d8c44"]]) {
+  for (const [value, color] of [[0, "#98a2a8"], [baseline - controlled, "#7d8c44"]]) {
     ctx.strokeStyle = color;
     ctx.beginPath();
     ctx.moveTo(margin.left, y(value));
@@ -376,8 +378,8 @@ function drawTravelChart() {
 
 function cutoffFromPointer(canvas, clientX) {
   const rect = canvas.getBoundingClientRect();
-  const left = canvas.id === "travel-chart" ? 64 : 47;
-  const right = canvas.id === "travel-chart" ? 16 : 14;
+  const left = canvas.id === "delay-chart" ? 64 : 47;
+  const right = canvas.id === "delay-chart" ? 16 : 14;
   const x = Math.max(0, Math.min(rect.width - left - right, clientX - rect.left - left));
   return Math.round(x / (rect.width - left - right) * state.data.metadata.timeSteps);
 }
@@ -395,8 +397,9 @@ function renderScenario() {
   $("#density-max").textContent = `${data.scales.density[1].toFixed(0)} veh/km/lane`;
   $("#source-path").textContent = `Source · results/${data.scenario.id}`;
   $("#resolution").textContent = `${data.metadata.segments} segments · ${data.metadata.timeStepSeconds.toFixed(0)}-second resolution`;
-  $("#baseline-travel-time").textContent = data.travelTime.baseline.toFixed(2);
-  $("#controlled-travel-time").textContent = data.travelTime.controlled.toFixed(2);
+  $("#baseline-delay").textContent = "0.00";
+  $("#controlled-delay").textContent = (data.delay.baseline - data.delay.controlled).toFixed(2);
+  $("#free-flow-time").textContent = data.delay.freeFlow.toFixed(2);
   for (const canvas of $$("canvas[role='slider']")) {
     canvas.setAttribute("aria-valuemin", "0");
     canvas.setAttribute("aria-valuemax", data.metadata.timeSteps);
@@ -432,7 +435,7 @@ async function initialize() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "The scenario reader is unavailable.");
     state.scenarios = payload.scenarios;
-    if (!state.scenarios.length) throw new Error("No valid run.npz bundles found in results/. Save a run with save_result first.");
+    if (!state.scenarios.length) throw new Error("No valid .npz run bundles found in results/. Save a run with save_result first.");
 
     const select = $("#scenario-select");
     select.replaceChildren(...state.scenarios.map((scenario) => {
@@ -474,7 +477,7 @@ $("#playback-speed").addEventListener("change", (event) => {
   if (state.playing) startPlayback();
 });
 
-for (const id of ["velocity-heatmap", "density-heatmap", "travel-chart"]) {
+for (const id of ["velocity-heatmap", "density-heatmap", "delay-chart"]) {
   const canvas = $(`#${id}`);
   canvas.addEventListener("click", (event) => {
     if (!state.data) return;
@@ -495,6 +498,6 @@ for (const id of ["velocity-heatmap", "density-heatmap", "travel-chart"]) {
 
 new ResizeObserver(() => {
   drawHeatmaps();
-  drawTravelChart();
+  drawSavingsChart();
 }).observe($("#visualization"));
 initialize();

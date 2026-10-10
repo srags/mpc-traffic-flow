@@ -5,9 +5,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..',
 from traffic_flow.paths import REPO_DIR, cut_repo
 from traffic_flow.results.console import colored
 from traffic_flow.results.plots import Plotter
-from traffic_flow.results.analysis import get_ff_tts
 from traffic_flow.config import CalRef, CalSource, StudyChoice
-from traffic_flow.results.io import load_some_run
+from traffic_flow.results.analysis import format_date_label, run_analysis, load_one_result
 
 # ── Dates to sweep ───────────────────────────────────────────────────────────
 STATIC_DATES = ["11_28", "11_29", "11_30"]
@@ -20,40 +19,11 @@ DYNAMIC_DATES = ["11_30"]
 
 def main():
     run_static_analysis(STATIC_DATES, 
-                        table_save=REPO_DIR / "figs" / "i24_cc_table.png",
-                        tex_save=REPO_DIR / "figs" / "i24_cc_table.tex",
-                        bar_chart_save=REPO_DIR / "figs" / "i24_cc_bar_chart.png")
+                        table_save=REPO_DIR / "figs" / "table_plot" / "cc_table.png",
+                        tex_save=REPO_DIR / "figs" / "table_plot" / "cc_table.tex",
+                        bar_chart_save=REPO_DIR / "figs" / "table_plot" / "cc_bar_chart.png")
     run_static_dynamic_analysis(DYNAMIC_DATES, 
-                                table_save=REPO_DIR / "figs" / "i24_cc_table_withdyn.png")
-
-from typing import NamedTuple
-
-class MPCStats(NamedTuple):
-    sim_error: float
-    tts_error: float
-    uncontrolled_ttt: float
-    controlled_ttt: float
-    cc: float
-    avg_tt_reduced_per_veh: float
-    uncontrolled_avg_tts: float
-    controlled_avg_tts: float
-
-def run_analysis(date, calibration: CalRef, study: StudyChoice):
-    run = load_some_run("i24", date, calibration, study)
-    spec, traffic = run.scenario.spec, run.scenario.traffic
-    gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes) 
-    sim_tt, opt_tt = run.optimization.baseline.total_travel_time, run.optimization.controlled.total_travel_time
-    ffv = run.params['v_free']
-    ff_tts = get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if calibration.interval else ffv) # static
-    num_veh = traffic.inflow.sum() * spec.time_step
-    return MPCStats(
-        (abs(traffic.velocity - run.optimization.baseline.velocity[:-1]) / traffic.velocity).mean() * 100, 
-        (abs(gt_tt - sim_tt) / gt_tt) * 100, sim_tt, opt_tt, 
-        np.clip((sim_tt - opt_tt) / (sim_tt - ff_tts) * 100, 0, 100), 
-        (sim_tt - opt_tt) / num_veh * 60,
-        (sim_tt - ff_tts) / num_veh * 60, 
-        (opt_tt - ff_tts) / num_veh * 60
-    )
+                                table_save=REPO_DIR / "figs" / "table_plot" / "cc_table_withdyn.png")
 
 def run_static_analysis(dates, table_save, tex_save, bar_chart_save):
     print(colored("Static-only CC sweep", "bold", "yellow"))
@@ -63,9 +33,9 @@ def run_static_analysis(dates, table_save, tex_save, bar_chart_save):
     avg_tts = np.empty((len(dates), 2))
     print(f"Dates: {colored(', '.join(dates), 'yellow')}")
     for i, date in enumerate(dates):
-        stats = run_analysis(date, CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
-        rows[i] = stats[:6]
-        avg_tts[i] = stats[6:]
+        stats = run_analysis(load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None))
+        rows[i] = (stats.sim_error, stats.tts_error, stats.sim_tt, stats.opt_tt, stats.cc, stats.avg_tt_reduced_per_veh)
+        avg_tts[i] = (stats.uncontrolled_avg_tts, stats.controlled_avg_tts)
 
     # TABLE PNG AND TEX
     table = [[date] + [f"{x:.2f} {u}" for x, u in zip(row, UNITS)] 
@@ -101,9 +71,9 @@ def run_static_dynamic_analysis(dates, table_save):
     print(f"Dates: {colored(', '.join(dates), 'yellow')}")
 
     for i, date in enumerate(dates):
-        stats = run_analysis(date, CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
+        stats = run_analysis(load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None))
         rows[i][:3] = stats.sim_error, stats.tts_error, stats.cc
-        stats = run_analysis(date, CalRef(CalSource.DYNAMIC, interval=90), study=None)
+        stats = run_analysis(load_one_result("i24", date, calibration=CalRef(CalSource.DYNAMIC, interval=90), study=None))
         rows[i][3:] = stats.sim_error, stats.tts_error, stats.cc
 
     save_table(table_save, HEADERS, 
@@ -137,13 +107,6 @@ def latex_table(headers, rows, caption="", label=""):
     \end{{tabular}} \end{{table}}
 """
 
-HOLIDAY_DATES = {(11, 24), (11, 25)}
-def format_date_label(date_str: str, year=2022):
-    """'11_30' -> '11/30 (Wed)'; holiday dates -> '11/24 (Holiday)'."""
-    import datetime
-    month, day = (int(p) for p in date_str.split('_'))
-    tag = 'Holiday' if (month, day) in HOLIDAY_DATES else datetime.date(year, month, day).strftime('%a')
-    return f"{month:02d}/{day:02d} ({tag})"
 
 if __name__ == "__main__":
     main()

@@ -77,12 +77,12 @@ Run this from the repository root with the project environment activated.
 | `solvers/mpc.py` | Rolling-horizon VSL optimization. |
 | `pipeline.py` | In-memory simulation, policy evaluation and optimization orchestration. |
 | `results/analysis.py` | Typed CC report data, fit/delay metrics, free-flow travel-time references, virtual-trajectory calculations and printed summaries. |
-| `results/io.py` | `save_result`, `load_result` and `load_runs`: complete-run persistence, validation and configuration filtering. |
+| `results/io.py` | `save_result`, `load_npz` and `load_results`: complete-run persistence, validation and configuration filtering. |
 | `results/plots.py` | `Plotter`, CC figures, optional virtual-trajectory visualization and other figure-generation functions. |
 | `results/i24.py` | Legacy I-24 loading, replay and reporting; not yet consolidated. |
 | `results/synthetic.py` | Typed replay results and both synthetic demand-study figures; reads legacy CSV policies without running MPC. |
 | `results/console.py` | Terminal formatting shared by policy saving and reports. |
-| `paths.py` | Repository root, settings-based run destinations (`run_dir`) and filesystem discovery (`find_run_dirs`). Neither operation creates directories or loads bundles. |
+| `paths.py` | Repository root, calibration/study destinations (`run_dir`) and recursive NPZ discovery (`find_npzs`). Neither operation creates directories or loads bundles. |
 
 Synthetic CSV replay, report data and figures intentionally remain together in
 `results/synthetic.py`. The I-24 workflow does not import that module. Shared
@@ -101,14 +101,15 @@ Use the package entry point for the main workflow functions:
 ```python
 from traffic_flow import (
     load_scenario, load_params, calibrate, optimize, evaluate,
-    save_result, load_result,
+    save_result, load_results, load_one_result,
 )
+from traffic_flow.results.io import load_npz  # Direct file-path loading.
 ```
 
 Settings and named choices remain in `traffic_flow.config`. Loading or replaying
 a result does not invoke IPOPT; calibration and optimization invoke the solver
 explicitly. The shared type definitions do import Pyomo. `save_result` and
-`load_result` persist complete numerical run bundles. Result I/O lives in
+`load_npz` persist complete numerical run bundles. Result I/O lives in
 `results/io.py`; the old `results/policies.py`, `results/cc.py` and
 `results/trajectories.py` modules have been removed, not retained as compatibility
 wrappers. Import virtual-trajectory calculations from `results.analysis`;
@@ -187,46 +188,36 @@ CC tables, two standard figures and a progressive-reveal figure:
 
 ```python
 from traffic_flow.config import CalRef, CalSource, default_mpc_config
-from traffic_flow import load_scenario, load_params, optimize, save_result, load_result
-from traffic_flow.paths import run_dir
-from traffic_flow.results.io import load_runs
+from traffic_flow import load_scenario, load_params, optimize, save_result, load_results
+from traffic_flow.results.io import load_npz
 
 calibration = CalRef(CalSource.FIXED_RAMPS)
 scenario = load_scenario("i24", "11_30")
 params = load_params(scenario, calibration=calibration)
 result = optimize(scenario, params, default_mpc_config(scenario.spec))
-spec = result.scenario.spec
-directory = run_dir(spec, calibration=calibration, config=result.config)
-save_result(result, directory)
+file_path = save_result(result, calibration=calibration, study=None)
 
 # A later reporting session needs the bundle, not calibration files.
-result = load_result(directory)
+result = load_npz(file_path)  # Full .npz path, not its containing directory.
 ```
 
 Pass the same `CalRef` to parameter loading and directory selection. The bundle
 stores actual parameter arrays; calibration provenance is currently a directory
 selector, not an additional metadata field.
 
-`run_dir(spec, calibration=..., config=..., study=...)` places bundles under
-the existing dataset/date/calibration/study layout, followed by
-`runs/lb_0_hold_1__<settings-id>/run.npz`, for example. When set, temporal and
-spatial bounds appear in the label too: `lb_0_hold_1_temp_0.7_spat_25__<settings-id>`.
-The readable labels are not the complete identity: the 16-hex-character ID
-includes every scenario metadata field and every MPC setting except `verbose`
-and `tee`, including initialization-array shape and contents. Equivalent
-numbers such as `0`, `0.0` and `-0.0`, list/tuple choices, and array memory
-layouts are normalized. Nonfinite settings and object arrays are rejected.
+`run_dir(spec, calibration=..., study=...)` selects the dataset/date/calibration
+directory, plus `control_h_<interval>` and a study directory when supplied.
+`save_result` writes `run.npz` directly there by default. Pass a different stem,
+such as `file_name="run2"`, to keep another configuration alongside it.
+There are no automatic configuration hashes or `runs/` subdirectories:
+**saving different settings with the same filename replaces the previous run.**
+The bundle still captures every MPC setting and its actual input arrays.
 
-Lookup creates no directories. Reusing identical settings resolves to the same
-destination and a successful save replaces that bundle. This is not versioned
-history: the ID does not fingerprint observation or fitted-parameter contents,
-even though those actual arrays are captured inside each saved bundle.
-
-For reporting without reconstructing solver settings, import `load_runs` from
+For reporting without reconstructing solver settings, import `load_results` from
 `traffic_flow.results.io` and filter the stored `MPCConfig`:
 
 ```python
-matches = load_runs(
+matches = load_results(
     "i24", "11_30", calibration=calibration,
     where=lambda config: config.speed_lb == 0,
 )
@@ -235,13 +226,12 @@ if len(matches) != 1:
 result = matches[0]
 ```
 
-`find_run_dirs` in `traffic_flow.paths` returns sorted directories containing
-`run.npz`, without decoding any arrays. `load_runs` uses that discovery function
-and reads complete bundles through `load_result`; it is not a metadata-only
-index. Discovery accepts old `speed_lb_*` and new settings-ID
-folders in the selected collection, validates dataset/date metadata, and filters
-using saved settings rather than filenames. Missing collections return an empty
-list; malformed bundles raise instead of being silently skipped. Sweep reports
+`find_npzs` in `traffic_flow.paths` returns sorted `.npz` file paths recursively,
+without decoding arrays. `load_results` loads them through `load_npz`, validates
+dataset/date metadata and filters by saved settings rather than filenames.
+Selecting a parent calibration directory also searches its nested study directories.
+Missing collections return an empty list; malformed bundles raise instead of being
+silently skipped. Sweep reports
 can use the full list. Single-run reports must reject zero or multiple matches:
 an old and a new copy both matching are intentionally not silently deduplicated.
 
@@ -255,7 +245,7 @@ does replay progressively applied policies with `evaluate`, but never optimizes
 again. This report currently requires static free-flow speeds.
 
 A bundle is required; legacy `.npy` policies are not silently converted or
-optimized. The HTML viewer reads the new `run.npz` bundles. Older I-24
+optimized. The HTML viewer discovers all `.npz` run bundles, including custom filenames. Older I-24
 multi-day/constraint scripts still read standalone legacy policies; updating
 the bundle loaders does not migrate those reports automatically.
 
@@ -272,7 +262,7 @@ reports retain their existing numerical conventions until explicitly migrated.
 scenario = load_scenario("i24", "11_30")
 params = calibrate(scenario, calibration_config)
 result = optimize(scenario, params, mpc_config)
-save_result(result, output_dir)
+file_path = save_result(result, calibration=calibration, study=None)
 ```
 
 These four entry points exist. `load_scenario` now reads observations only;
@@ -288,17 +278,17 @@ trajectories. The lower-level
 solver/simulation result formats and `evaluate()` remain unchanged;
 `frozen=True` alone does not make arrays or dictionaries immutable.
 
-`save_result(result, output_dir)` writes one compressed `run.npz` archive with schema-versioned JSON
+`save_result(result, calibration, study, file_name="run")` writes one compressed `.npz` archive with schema-versioned JSON
 metadata, all prepared traffic arrays, static/dynamic parameter arrays, MPC
 settings (including optional initialization controls), the raw VSL and both
 simulation results. Numeric arrays retain their dtypes and shapes; reading
 does not require pickle. The writer uses a temporary file and replaces the
 destination only after compression succeeds. Existing policy/JSON files remain untouched.
-One output directory represents one run; a successful repeat save replaces
-its `run.npz`. The `run_dir` helper separates numerical configurations, including
-speed-bound, hold-length and safety-bound sweeps.
+One output directory can contain several named runs. A successful repeat save
+replaces only the selected filename; callers must choose distinct names to retain
+different numerical configurations.
 
-`load_result(output_dir) -> RunResult` restores saved arrays, scalar travel times,
+`load_npz(file_path) -> RunResult` takes the full archive path and restores saved arrays, scalar travel times,
 and tuple/list settings using `allow_pickle=False`. It does not reload datasets
 or calibrations, rerun simulation/optimization, or write files. It rejects
 unsupported schema versions, missing settings and missing required arrays
@@ -315,7 +305,7 @@ load referenced calibration files from disk, unlike bundle-based CC reporting.
 
 Legacy JSON sidecars contain `calibration_id` and `calibration_interval` alongside
 scenario geometry. These existing artifacts remain on disk, but are not the
-complete-run format; `load_result` does not fall back to them. The new format
+complete-run format; `load_npz` does not fall back to them. The new format
 stores the numerical parameter snapshot directly.
 
 Before replacing experiment implementations, compare generated numeric results
@@ -336,20 +326,28 @@ make test           # Numerical, persistence and mocked solver checks; no IPOPT 
 The small suite is organized into three files:
 
 - `test_result_io.py`: exact bundle round trips, failed-write recovery,
-  stable directory names/hashes, discovery/filtering and misplaced-bundle rejection.
+  named-file discovery/filtering, misplaced-bundle rejection and HTML reader integration.
 - `test_mpc_contract.py`: rejected solver output triggers retries, and exhausted
   retries raise rather than returning a failed run; solver calls are mocked.
 - `test_pipeline_baseline.py`: preparation/simulation comparisons against
-  revision `4f82654`, legacy synthetic replay, and numerical report regressions.
+  revision `4f82654`, the current TTT accounting convention, legacy synthetic
+  replay, and numerical report regressions.
 
 Tests do not run IPOPT, render figures or execute notebook cells. Temporary-file
 tests do not write to the repository's `data/` or `results/`.
 
-For the most recently modified bundle in the ordinary I-24 11/30 fixed-ramp
-`runs/` collection, the suite compares saved baseline and controlled trajectories to
+Density, velocity and queue histories still match `4f82654` at the original
+tolerance. The accepted TTT change in `run_with_history` excludes the terminal
+density row but retains the full queue sum: the tests subtract only terminal
+road occupancy from the historical reference total. A small independent test
+checks this with unequal lane counts and a nonzero terminal queue. `run` and
+`run_with_opt` still include terminal density; they do not yet share this convention.
+
+For the most recently modified `.npz` directly in the I-24 11/30 fixed-ramp
+calibration directory, the suite compares saved baseline and controlled trajectories to
 the simulator from `4f82654`, using exactly its observations, parameters and
-controls. Both old and new folder names are discovered; study subdirectories
-are outside this optional check's scope. The tolerance is `rtol=atol=1e-10`;
+controls. Study subdirectories are outside this optional check's scope.
+The tolerance is `rtol=atol=1e-10`;
 no MPC solve or output-file write is involved. This case skips when no bundles
 are present. Run just this comparison with:
 
@@ -460,8 +458,8 @@ The other parameters the paper sweeps, all fields of `MPCConfig`:
 | `safety_temporal` | Max VSL change between consecutive 10 s steps, km/hr. |
 | `safety_spatial` | Max VSL difference between adjacent segments, km/hr. |
 
-The runners write `runs/<readable-settings>__<settings-id>/run.npz` under the
-selected result directory (including the study subdirectory when selected).
+The runners write `run.npz` (or a supplied `file_name` plus `.npz`) directly in
+the selected calibration/study directory. Use distinct filenames to keep sweep points.
 Existing legacy results retain their `optimal_vsl*.npy` and
 optional JSON sidecars for older consumers. They are not accepted as complete
 run bundles and are not automatically converted.
@@ -500,7 +498,7 @@ change `POLICY_DIR` explicitly to use another collection. The filenames are
 `demand<peak>.0_duration0.5.csv` for the default integer peaks. CSVs contain no
 scenario metadata, so the configuration must match the policy-producing run.
 No files are copied, converted or written back to that directory. These legacy
-replays do not use the I-24-only `load_scenario`/`load_runs` interface or invent
+replays do not use the I-24-only `load_scenario`/`load_results` interface or invent
 measured trajectories for calibration.
 
 `load_synthetic_results(...)` returns `SyntheticResult` objects containing
@@ -520,10 +518,12 @@ collection or a malformed policy produces a clear error before plotting.
 
 ```
 results/i24/i24_<MM_DD>/<calibration_source>/
-├── runs/<settings-label>__<settings-id>/run.npz            # study=None
-├── speed_lb/runs/<settings-label>__<settings-id>/run.npz
-├── hold_length/runs/<settings-label>__<settings-id>/run.npz
-└── safety_sweep/runs/<settings-label>__<settings-id>/run.npz
+├── run.npz                                              # study=None
+├── speed_lb/run.npz
+├── hold_length/run.npz
+└── safety_sweep/
+    ├── run.npz
+    └── run2.npz                                          # explicit alternate filename
 
 results_bu/i24/i24_<MM_DD>/<calibration_source>/
 ├── optimal_vsl.npy                                       # legacy policy only
@@ -542,7 +542,7 @@ results_bu/synthetic_10km/
 `calibration_source` can contain multiple path components, such as
 `calibration_static/fixed_ramping`. When `CalRef.interval` is set,
 `control_h_<interval>/` appears after the calibration source and before the
-study or `runs/` directory. The new helpers search `results/` only; legacy
+study directory or bundle file. The new helpers search `results/` only; legacy
 reports must explicitly select the appropriate historical policy location.
 
 ---

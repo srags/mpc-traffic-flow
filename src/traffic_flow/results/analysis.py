@@ -1,116 +1,29 @@
 """Numerical CC report inputs; no plotting or file writes."""
 from dataclasses import dataclass
 import numpy as np
+
+from traffic_flow.config import CalRef, StudyChoice
+from traffic_flow.results.io import load_one_result
 from .console import colored
 from ..inputs.scenario import Scenario
-from ..types import MetanetParams, OptimizationResult, SimulationResult, time_space
+from ..types import *
 
-def get_num_veh(demand_profile, time_step):
-    """Integrate demand (veh/hr) over time steps (hr), returning vehicles."""
-    return sum(demand_profile) * time_step
+def mape(observed: np.ndarray | float, predicted: np.ndarray | float):
+    return (np.abs((observed - predicted) / observed) * 100).mean()
 
+def rmse(observed: np.ndarray | float, predicted: np.ndarray | float):
+    return np.sqrt(np.mean((observed - predicted) ** 2))
 
 def get_ff_tts(demand_profile, time_step, length, v_free):
-    """
-    Calculate total time spent (TTS) under free flow conditions.
+    """Free-flow TTS charging every mainline arrival one full corridor traversal.
 
-    Parameters:
-        demand_profile : list of demands at each time step (veh/h)
-        time_step      : simulation time step (hours)
-        length         : segment length (km)
-        v_free         : list of free flow speeds, one per segment (km/h)
-
-    Returns:
-        free flow TTS (vehicle-hours)
+    Superseded by `ff_tts_vkm`, which also counts vehicles entering at on-ramps and
+    charges each vehicle only the distance it travels. Kept so the numbers in results
+    produced before that change can still be reproduced.
     """
     num_vehicles  = sum(demand_profile) * time_step
     ff_travel_time = sum(length / v for v in v_free)  # hours
     return num_vehicles * ff_travel_time
-
-
-@dataclass(frozen=True)
-class CCReport:
-    scenario: Scenario
-    params: MetanetParams
-    result: OptimizationResult
-    diagnostic: SimulationResult
-    display_vsl: time_space
-    free_flow_ttt: float
-    delay: float
-    controlled_delay: float
-    observed_delay: time_space
-    pct_decrease: time_space
-
-    @property
-    def fit_rows(self) -> dict[str, str]:
-        """Original measured-inflow diagnostic, excluding the terminal row."""
-        spec, traffic = self.scenario.spec, self.scenario.traffic
-        p_sim, v_sim = self.diagnostic.density[:-1], self.diagnostic.velocity[:-1]
-        q_sim = v_sim * p_sim * traffic.lanes
-        rows = {
-            name: f"MAPE {np.mean(np.abs((observed - predicted) / observed) * 100):.2f}%, "
-                  f"RMSE {np.sqrt(np.mean((observed - predicted) ** 2)):.2f}"
-            for name, observed, predicted in (
-                ("Velocity", traffic.velocity, v_sim),
-                ("Density", traffic.density, p_sim),
-                ("Flow", traffic.flow, q_sim),
-            )
-        }
-        gt_tt, sim_tt = (spec.time_step * spec.L * (rho * traffic.lanes[np.newaxis, :]).sum()
-                         for rho in (traffic.density, p_sim))
-        rows["Travel Time"] = f"{gt_tt:.2f} veh-hr vs {sim_tt:.2f} veh-hr (MAPE {abs(gt_tt - sim_tt) / gt_tt * 100:.2f}%)"
-        return rows
-
-    @property
-    def cc_rows(self) -> dict[str, str]:
-        return {
-            "Total free flow travel time": f"{self.free_flow_ttt:.2f} veh-hrs",
-            "Controllable congestion": f"{np.divide(self.delay - self.controlled_delay, self.delay) * 100:.2f}%",
-            "Delay (ground truth)": f"{self.observed_delay.min():.2f} min - {self.observed_delay.max():.2f} min",
-            "Pct decrease": f"{self.pct_decrease.min():.2f}% - {self.pct_decrease.max():.2f}%",
-        }
-
-
-def cc_report(scenario: Scenario, params: MetanetParams, result: OptimizationResult) -> CCReport:
-    """Prepare the existing cc_plot report, keeping its two baseline conventions.
-
-    Calibration diagnostics use measured inflow; the supplied policy result uses
-    the modeled origin/queue. Only the diagnostic is recomputed here, never MPC.
-    This report expects static free-flow speeds, as the original cc_plot did.
-    """
-    from ..pipeline import simulate_scenario
-
-    spec, traffic = scenario.spec, scenario.traffic
-    v_free = params["v_free"]
-    if v_free.shape != (spec.num_segments,):
-        raise ValueError("The CC report requires one static free-flow speed per segment")
-    if result.vsl.shape != (spec.time_steps, spec.num_segments):
-        raise ValueError("Policy dimensions do not match the report scenario")
-
-    diagnostic = simulate_scenario(
-        traffic, params, T=spec.time_step, l=spec.L, steps=spec.time_steps, real_data=True,
-    )
-    # Display-only transformation: simulation always uses result.vsl unchanged.
-    display_vsl = np.where(result.vsl > np.tile(v_free, (len(result.vsl), 1)), 150, result.vsl)
-    ff_ttt = get_ff_tts(traffic.inflow, spec.time_step, spec.L, v_free)
-    delay = result.baseline.total_travel_time - ff_ttt
-    controlled_delay = result.controlled.total_travel_time - ff_ttt
-    free_flow_speed = np.array(v_free)[:, np.newaxis]
-    observed_delay = (spec.L / traffic.velocity.T - spec.L / free_flow_speed) * 60
-    controlled_point_delay = (spec.L / result.controlled.velocity[:-1].T - spec.L / free_flow_speed) * 60
-    pct_decrease = np.where(observed_delay > 0.01,
-                            (observed_delay - controlled_point_delay) / observed_delay * 100, 0)
-    return CCReport(scenario, params, result, diagnostic, display_vsl,
-                    float(ff_ttt), float(delay), float(controlled_delay), observed_delay, pct_decrease)
-
-
-def print_cc_report(report: CCReport) -> None:
-    from tabulate import tabulate
-
-    print(colored("No Control", "bold", "yellow"))
-    print(tabulate(report.fit_rows.items(), headers=("Quantity", "Result"), tablefmt="outline"))
-    print(colored("Optimized VSLs", "bold", "yellow"))
-    print(tabulate(report.cc_rows.items(), headers=("Metric", "Value"), tablefmt="outline"))
 
 from math import ceil, floor
 
@@ -192,22 +105,42 @@ def get_virtual_trajectory(speed_field, time_start, space_start, d_time, d_space
 
     return time_points, space_points       
 
-def vt_travel_time_stats(macro_velocity_field, time_step=10/3600, num_samples=50, plotting=False):
-    m, time_steps = macro_velocity_field.shape
-    # Let's use the get_virtual_trajectory and visualize the results
-    x_starts = np.linspace(0, time_steps-1, num_samples) #np.random.uniform(0, time_steps, num_samples)
-    y_starts = [m - 0.0001 for i in range(num_samples)]
-    d_time = 4
-    d_space =  0.5
-    virtual_trajectories = [get_virtual_trajectory(macro_velocity_field, x_start, y_start, d_time, d_space) for x_start, y_start in zip(x_starts, y_starts)]
 
-    vt_times = [(time_points[-1] - time_points[0]) * time_step * 60 for time_points, space_points in virtual_trajectories]
+HOLIDAY_DATES = {(11, 24), (11, 25)}
+def format_date_label(date_str: str, year=2022):
+    """'11_30' -> '11/30 (Wed)'; holiday dates -> '11/24 (Holiday)'."""
+    import datetime
+    month, day = (int(p) for p in date_str.split('_'))
+    tag = 'Holiday' if (month, day) in HOLIDAY_DATES else datetime.date(year, month, day).strftime('%a')
+    return f"{month:02d}/{day:02d} ({tag})"
 
-    if plotting:
-        from .plots import plot_virtual_trajectories
 
-        print(f"Mean vehicle travel time: {np.mean(vt_times)} min")
-        print(f"Standard deviation of vehicle travel time: {np.std(vt_times, ddof=1)} min")
-        plot_virtual_trajectories(macro_velocity_field, virtual_trajectories)
+@dataclass(frozen=True)
+class MPCStats:
+    gt_tt: veh_hr; sim_tt: veh_hr; opt_tt: veh_hr; ff_tt: veh_hr
+    sim_error: float
+    num_veh: float
+    @property
+    def tts_error(self): return (abs(self.gt_tt - self.sim_tt) / self.gt_tt) * 100
+    @property
+    def cc(self): return np.clip((self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100, 0, 100)
+    @property
+    def avg_tt_reduced_per_veh(self): return (self.sim_tt - self.opt_tt) / self.num_veh * 60
+    @property
+    def uncontrolled_avg_tts(self): return (self.sim_tt - self.ff_tt) / self.num_veh * 60
+    @property
+    def controlled_avg_tts(self): return (self.opt_tt - self.ff_tt) / self.num_veh * 60
 
-    return vt_times
+def run_analysis(run: RunResult) -> MPCStats:
+    spec, traffic = run.scenario.spec, run.scenario.traffic
+    gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes) 
+    sim_tt, opt_tt = run.optimization.baseline.total_travel_time, run.optimization.controlled.total_travel_time
+    ffv = run.params['v_free']
+    return MPCStats(
+        gt_tt     = gt_tt,
+        sim_tt    = sim_tt,
+        opt_tt    = opt_tt,
+        ff_tt     = get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),
+        sim_error = (abs(traffic.velocity - run.optimization.baseline.velocity[:-1]) / traffic.velocity).mean() * 100, 
+        num_veh   = traffic.inflow.sum() * spec.time_step
+    )

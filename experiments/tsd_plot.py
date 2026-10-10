@@ -23,21 +23,20 @@ from traffic_flow.inputs.scenario import load_params, load_scenario
 from traffic_flow.paths import REPO_DIR, cut_repo
 
 from traffic_flow.results.console import colored
-from traffic_flow.results.io import load_runs
+from traffic_flow.results.io import load_results
 from traffic_flow.results.plots import Plotter
 
 from traffic_flow.config import CalRef, CalSource
-from traffic_flow.results.i24 import (                    # noqa: E402
-    L, time_step, get_ff_tts, format_date_label,
-)
 from traffic_flow.model.simulation import METANET_Simulator # noqa: E402
 from traffic_flow.pipeline import init_state
+from traffic_flow.results.analysis import get_ff_tts, format_date_label
 
-SAVE_PATH = REPO_DIR / "figs" / "i24_tsd.png"
+SAVE_PATH = REPO_DIR / "figs" / "tsd_plot" / "tsd.png"
 
 DATES = ["11_28", "12_02"]
 # Segments 0 and 1 are left uncontrolled (see Section 5.2); the control zone
 # begins at this distance along the corridor.
+L, time_step = 0.4, 10/3600
 CONTROL_ZONE_START_KM = 2 * L
 SHOW_OBSERVED = True
 TEXT_FONTSIZE = 18
@@ -47,11 +46,11 @@ def run_day(date):
     scenario = load_scenario("i24", date)
     spec, traffic = scenario.spec, scenario.traffic
     params = load_params(scenario, CalRef(CalSource.FIXED_RAMPS, interval=None))
-
+    assert L == spec.L
     sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=dict(enumerate(traffic.lanes)), real_data=True)
     _, v_sim, _, tts_sim = sim.run_with_history(traffic.inflow, traffic.downstream_density, init_state(traffic))
 
-    runs = load_runs("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
+    runs = load_results("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
     assert len(runs) == 1, f"Expected 1 run for date {date}, got {len(runs)}"
     vsl = runs[0].optimization.vsl
 

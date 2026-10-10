@@ -210,18 +210,18 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
     
 
 from pathlib import Path
-from .analysis import CCReport
+from .analysis import MPCStats
 from .console import colored
 from ..paths import REPO_DIR
 
 
-def save_cc_plots(report: CCReport, output_dir: Path, *, start_hour: float = 7.5) -> tuple[Path, Path]:
+def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCStats, output_dir: Path, *, start_hour: float = 7.5) -> tuple[Path, Path]:
     """Save optimal_vsl.png and controlled.png, preserving the cc_plot layout.
 
     No solver/simulator runs or policy writes. Matplotlib is imported only here.
     """
-    spec, traffic = report.scenario.spec, report.scenario.traffic
-    result = report.result
+    spec, traffic = run_result.scenario.spec, run_result.scenario.traffic
+    result = run_result.optimization
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -234,8 +234,9 @@ def save_cc_plots(report: CCReport, output_dir: Path, *, start_hour: float = 7.5
         return path
 
     p = Plotter(1, 1)
-    p.fig.colorbar(p[0].imshow(report.display_vsl.T, cmap='RdYlGn', aspect='auto', interpolation='none',
-                             vmin=0, vmax=report.params['v_free'].max()), label='VSL speed (km/hr)')
+    display_vsl = np.where(result.vsl > run_result.params["v_free"][None, :], 150, result.vsl)
+    p.fig.colorbar(p[0].imshow(display_vsl.T, cmap='RdYlGn', aspect='auto', interpolation='none',
+                             vmin=0, vmax=run_result.params['v_free'].max()), label='VSL speed (km/hr)')
     p[0] = {
         'title': 'Optimal VSL Speeds', 'xlabel': 'Time (min)', 'ylabel': 'Distance (km)',
         'xticks': np.arange(0, spec.time_steps + 1, 60),
@@ -262,11 +263,11 @@ def save_cc_plots(report: CCReport, output_dir: Path, *, start_hour: float = 7.5
     for i, mat in enumerate((traffic.velocity, result.baseline.velocity, result.controlled.velocity)):
         p.fig.colorbar(
             mappable=p[i].imshow(mat.T, cmap='RdYlGn', aspect='auto', interpolation='none',
-                                vmin=0, vmax=max(traffic.velocity.max(), report.diagnostic.velocity[:-1].max())),
+                                vmin=0, vmax=max(traffic.velocity.max(), run_result.optimization.baseline.velocity[:-1].max())),
             ax=p[i], label='Velocity (km/hr)', orientation='horizontal',
         )
     p.fig.colorbar(
-        mappable=p[3].imshow(report.pct_decrease, cmap='inferno', aspect='auto', vmin=-100, vmax=100),
+        mappable=p[3].imshow(pct_decrease, cmap='inferno', aspect='auto', vmin=-100, vmax=100),
         ax=p[3], label='% Decrease in Delay', orientation='horizontal', location='bottom',
         pad=0.15, shrink=0.8, aspect=20,
     )
@@ -275,11 +276,10 @@ def save_cc_plots(report: CCReport, output_dir: Path, *, start_hour: float = 7.5
                 'xticklabels': tick_labels, 'yticklabels': ytick_labels}
         p[i].invert_yaxis()
     p[0] = {'title': f'{spec.freeway.upper().replace("I24", "I-24")} Ground Truth'}
-    p[1] = {'title': f'METANET Simulation\n(TT: {np.round(result.baseline.total_travel_time, 2)} veh-hr, Delay: {np.round(report.delay, 2)} veh-hr)'}
-    p[2] = {'title': f'VSL Control\n(TT: {np.round(result.controlled.total_travel_time, 2)} veh-hr, Delay: {np.round(report.controlled_delay, 2)} veh-hr)'}
+    p[1] = {'title': f'METANET Simulation\n(TT: {np.round(result.baseline.total_travel_time, 2)} veh-hr, Delay: {np.round(stats.sim_tt - stats.ff_tt, 2)} veh-hr)'}
+    p[2] = {'title': f'VSL Control\n(TT: {np.round(result.controlled.total_travel_time, 2)} veh-hr, Delay: {np.round(stats.opt_tt - stats.ff_tt, 2)} veh-hr)'}
     p[3] = {'title': '% Decrease in Delay'}
     controlled_path = save(p, "controlled.png")
-
 
 
     return policy_path, controlled_path
@@ -315,3 +315,55 @@ def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
         )
     p[0].grid()
     p.show()
+
+
+
+from traffic_flow import evaluate
+
+def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16, batches: int = 4) -> Path:
+  """Save the evaluate-based reveal using modeled inflow/queue and a 150 km/hr baseline."""
+  import numpy as np
+  from traffic_flow.results.plots import Plotter
+
+  if checkpoints < 2 or batches < 1 or checkpoints % batches:
+    raise ValueError("CHECKPOINTS must be at least 2 and divisible by BATCHES")
+  scenario, params = result.scenario, result.params
+  spec = scenario.spec
+  baseline = result.optimization.baseline.velocity[:-1]
+  # Keep the notebook's speed substitution to isolate the origin-mode change.
+  optimal_vsl = np.where(result.optimization.vsl > params["v_free"], 150, result.optimization.vsl)
+  free_vsl = np.full_like(optimal_vsl, 150)
+
+  times = np.rint(np.linspace(0, len(optimal_vsl), checkpoints)).astype(int)
+  columns = checkpoints // batches
+  p = Plotter(2 * batches, columns, figsize=(5 * columns, 5 * batches))
+  vmax = max(scenario.traffic.velocity.max(), baseline.max())
+  extent = (0, spec.time_steps * spec.time_step * 60, 0, spec.num_segments * spec.L)
+
+  for k, t in enumerate(times):
+    vsl = free_vsl.copy()
+    vsl[:t] = optimal_vsl[:t]
+    velocity = baseline.copy()
+    if t:
+      replay = evaluate(scenario, params, vsl)
+      velocity[:t] = replay.controlled.velocity[:t]
+    batch, column = divmod(k, columns)
+    for row, data, label, first, last in (
+      (2 * batch, vsl, "VSL Speeds", "Free VSL Speeds", "Optimal VSL Speeds"),
+      (2 * batch + 1, velocity, "Time Space", "Baseline Time Space", "Optimized Time Space"),
+    ):
+      ax = p[row, column]
+      ax.imshow(data.T, cmap="RdYlGn", aspect="auto", interpolation="none",
+                origin="lower", extent=extent, vmin=0, vmax=vmax)
+      if 0 < t < len(optimal_vsl): ax.axvline(t * spec.time_step * 60, color="black", linewidth=3)
+      ax.set(title=first if k == 0 else last if k == checkpoints - 1 else f"{label} {k}",
+              xlabel="Time (min)", ylabel="Distance (km)")
+
+  p.fig.tight_layout()
+  output_dir = Path(output_dir)
+  output_dir.mkdir(parents=True, exist_ok=True)
+  path = output_dir / "cc_reveal_evaluate.png"
+  p.savefig(path, dpi=150)
+  display = path.relative_to(REPO_DIR) if path.is_relative_to(REPO_DIR) else path
+  print(f"Saved to {colored(display, 'green')}")
+  return path

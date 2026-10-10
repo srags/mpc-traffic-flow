@@ -2,7 +2,9 @@
 
 from .inputs.scenario import load_scenario, load_params
 from .pipeline import calibrate, optimize, evaluate
-from .results.io import save_result, load_result
+from .results.io import save_result, load_results, load_one_result
+from .types import RunResult
+from .config import CalRef, CalSource, Study, InitMode
 
 __all__ = [
     "load_scenario",
@@ -11,5 +13,12 @@ __all__ = [
     "optimize",
     "evaluate",
     "save_result",
-    "load_result"
+    "load_results",
+    "load_one_result",
+    # types
+    "RunResult",
+    "CalRef",
+    "CalSource",
+    "Study",
+    "InitMode"
 ]

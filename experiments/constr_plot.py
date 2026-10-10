@@ -36,16 +36,16 @@ from traffic_flow.results.console import colored
 from traffic_flow.pipeline import init_state
 from traffic_flow.results.plots import Plotter
 
-from traffic_flow.inputs.scenario import load_params, load_scenario
-from traffic_flow.config import CalSource, CalRef
+from traffic_flow import CalSource, CalRef, load_params, load_scenario
 from traffic_flow.paths import REPO_DIR, cut_repo
-from traffic_flow.results.i24 import L, time_step, get_ff_tts
-from traffic_flow.model.simulation import METANET_Simulator  # noqa: E402
+from traffic_flow.results.analysis import get_ff_tts
+from traffic_flow.model.simulation import METANET_Simulator
 
 DATE = "11_30"
+L, time_step = 0.4, 10/3600
 SWEEP_ROOT = REPO_DIR / "results_bu" / "i24" / f"i24_{DATE}" / CalSource.FIXED_RAMPS
-SAVE_PATH = REPO_DIR / "figs" / "i24_constraints.png"
-HEATMAP_SAVE_PATH = REPO_DIR / "figs" / "i24_safety_heatmap.png"
+SAVE_PATH = REPO_DIR / "figs" / "constr_plot" / "i24_constraints.png"
+HEATMAP_SAVE_PATH = REPO_DIR / "figs" / "constr_plot" / "i24_safety_heatmap.png"
 
 # Fixed value of the *other* bound in each smoothness slice, in km/hr. Chosen
 # for coverage: these rows/columns of the grid have the most successful runs.

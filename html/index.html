@@ -75,25 +75,26 @@
       </div>
 
       <section class="stats-grid" aria-label="Scenario summary">
-        <article><span>Travel time</span><strong id="travel-time">—</strong><small>veh-hr</small></article>
+        <article><span>Delay</span><strong id="delay">—</strong><small>veh-hr</small></article>
         <article><span>Mean velocity</span><strong id="mean-velocity">—</strong><small>km/h</small></article>
         <article><span>Peak density</span><strong id="peak-density">—</strong><small>veh/km/lane</small></article>
         <article><span>Peak queue</span><strong id="peak-queue">—</strong><small>vehicles</small></article>
       </section>
 
-      <section class="panel travel-card" aria-labelledby="travel-heading">
+      <section class="panel delay-card" aria-labelledby="delay-heading">
         <div class="section-heading">
-          <h2 id="travel-heading">Total travel time</h2>
-          <span class="travel-readout" id="travel-readout"></span>
+          <h2 id="delay-heading">Time saved</h2>
+          <span class="delay-readout" id="delay-readout"></span>
         </div>
-        <canvas id="travel-chart" height="220" tabindex="0" role="slider"
-                aria-label="Total travel time by optimization cutoff"></canvas>
-        <div class="travel-key">
-          <span><i class="baseline-line"></i>Baseline <b id="baseline-travel-time"></b></span>
-          <span><i class="controlled-line"></i>Fully controlled <b id="controlled-travel-time"></b></span>
+        <canvas id="delay-chart" height="220" tabindex="0" role="slider"
+                aria-label="Time saved versus baseline by optimization cutoff"></canvas>
+        <div class="delay-key">
+          <span><i class="baseline-line"></i>Baseline <b id="baseline-delay"></b></span>
+          <span><i class="controlled-line"></i>Fully controlled savings <b id="controlled-delay"></b></span>
+          <span>Free-flow TTT <b id="free-flow-time"></b></span>
           <span>veh-hr, including queue</span>
         </div>
-        <p class="chart-note">Controlled history + baseline future, matching the reveal above. Not a new partial-policy simulation; temporary rises are possible.</p>
+        <p class="chart-note">Time saved = baseline delay − current delay; percentage = time saved / baseline delay. Controlled history + baseline future, matching the reveal above. Not a new partial-policy simulation; temporary dips are possible.</p>
       </section>
 
       <section class="diagrams">
