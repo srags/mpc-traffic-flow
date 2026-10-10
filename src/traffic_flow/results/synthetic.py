@@ -17,7 +17,7 @@ from ..model.parameters import default_metanet_params
 from ..model.simulation import METANET_Simulator
 from ..types import MetanetParams, MetanetState, OptimizationResult, SimulationResult
 from .analysis import get_ff_tts
-from .console import colored
+from ..console import colored
 
 
 @dataclass(frozen=True)

@@ -13,15 +13,13 @@ standardize input output format
 
 calibration -> mpc
 
-improve calibration
-
+improve calibration?
 look into other optimizations that can be done instead of vsl?
 
 
 
 frontend:
 pg17
-make sure I_24_table. work DONE
 look at delay instead of TTS (minus free flow travel time) DONE
 average for the segments
 per-segments
@@ -32,6 +30,11 @@ backend:
 dynamic calibration
 
 pipeline
+make sure I_24_table. work DONE
 analysis DONE
+run_dir into collection_dir DONE
 merge with main
-run_dir into collection_dir
+plot_constraints.ipynb
+synthetic generation
+toy network thing
+

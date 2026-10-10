@@ -169,6 +169,7 @@ class METANET_Simulator:
         ttt: veh_hr = self.T * float(self.l * (self.cur_state.density @ self.lanes_array) + self.cur_state.queue)
         for t in range(self.time_steps):
             self.cur_state = self._step(t, self.cur_state)
+            if t == self.time_steps-1: continue
             ttt += self.T * float(self.l * (self.cur_state.density @ self.lanes_array) + self.cur_state.queue)
         return self.cur_state, ttt
 

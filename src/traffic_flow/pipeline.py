@@ -22,7 +22,6 @@ def init_state(traffic: TrafficData) -> MetanetState:
     queue=0.0,
   )
 
-
 def simulate_scenario(
     traffic: TrafficData,
     params: MetanetParams,

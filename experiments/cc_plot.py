@@ -1,16 +1,16 @@
 """Replay a saved policy and generate the two CC figures; never run MPC."""
-from pathlib import Path
-import sys, numpy as np
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import sys; from pathlib import Path
+REPO_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_DIR / "src"))
 
 from traffic_flow.results.analysis import mape, rmse, run_analysis
 from traffic_flow import CalRef, CalSource, InitMode, Study, load_one_result
 from traffic_flow.paths import REPO_DIR
 from traffic_flow.results.plots import save_cc_plots, save_reveal_plots
-from traffic_flow.results.console import colored
+from traffic_flow.console import announce_title, announce_file
 
 from tabulate import tabulate
+import numpy as np
 
 FIGURE_DIR = REPO_DIR / "figs"
 START_HOUR = 7.5
@@ -19,7 +19,7 @@ def main() -> None:
   result = load_one_result("i24", "11_28", calibration=CalRef(CalSource.FIXED_RAMPS, interval = None), study=None)
   stats = run_analysis(result)
   traffic, uncontrolled, controlled = result.scenario.traffic, result.optimization.baseline, result.optimization.controlled
-  print(colored("No Control", "bold", "yellow"))
+  announce_title("No Control")
 
   data = [("Velocity", traffic.velocity, uncontrolled.velocity[:-1]), 
           ("Density", traffic.density, uncontrolled.density[:-1]), 
@@ -33,7 +33,7 @@ def main() -> None:
   controlled_delay = (spec.L / controlled.velocity[:-1].T - spec.L / v_free) * 60
   pct_decrease = np.where(observed_delay > 0.01, (observed_delay - controlled_delay) / observed_delay * 100, 0)
 
-  print(colored("Optimized VSLs", "bold", "yellow"))
+  announce_title("Optimized VSLs")
   print(tabulate(headers=("Metric", "Value"), tablefmt="outline", tabular_data=[
     ['Total free flow travel time', f'{stats.ff_tt:.2f} veh-hrs'],
     ['Controllable congestion', f'{stats.cc:.2f}%'],
@@ -45,4 +45,5 @@ def main() -> None:
   save_reveal_plots(result, FIGURE_DIR, checkpoints=16, batches=4)
 
 if __name__ == "__main__":
+  announce_file(Path(__file__))
   main()

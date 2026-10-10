@@ -11,7 +11,7 @@ from ..types import (
     SimulationResult, TrafficData
 )
 from typing import Callable, cast
-from .console import colored
+from ..console import colored
 from ..inputs.scenario import Scenario
 
 from tempfile import NamedTemporaryFile
@@ -51,9 +51,7 @@ def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file
     if any(array.dtype.hasobject for array in arrays.values()):
         raise ValueError("Run bundles cannot contain object arrays.")
 
-    output_dir = Path(collection_dir(
-        result.scenario.spec.freeway, result.scenario.spec.date, calibration=calibration, study=study
-    ))
+    output_dir = Path(collection_dir(result.scenario.spec.freeway, result.scenario.spec.date, calibration, study))
     
     path = output_dir / f"{file_name}.npz"
     output_dir.mkdir(parents=True, exist_ok=True)

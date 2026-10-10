@@ -1,17 +1,16 @@
 """Optimize the selected I-24 scenario and save its policy + settings."""
+import sys; from pathlib import Path
+REPO_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_DIR / "src"))
+
 import logging, sys, numpy as np
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from traffic_flow.paths import REPO_DIR
-
-from traffic_flow.results.console import colored
+from traffic_flow.console import announce_title, announce_file
 from traffic_flow import (load_params, load_scenario, optimize, save_result, 
                           CalSource, InitMode, Study, CalRef, Study)
 
 def cc_optimize(dataset: str, date: str, calibration: CalRef, study, **kwargs):
   logging.getLogger("pyomo.core").setLevel(logging.ERROR)
-  print(colored("VSL Optimization", "bold", "yellow"))
+  announce_title("VSL Optimization")
   scenario = load_scenario(dataset, date)
   params = load_params(scenario, calibration=calibration)
   config = scenario.spec.to_mpc_config(**kwargs)
@@ -19,6 +18,7 @@ def cc_optimize(dataset: str, date: str, calibration: CalRef, study, **kwargs):
   save_result(result, calibration=calibration, study=study)
 
 if __name__ == "__main__":
+  announce_file(Path(__file__))
   # regular run
   if 1: [cc_optimize(
     dataset = "i24", date = x,

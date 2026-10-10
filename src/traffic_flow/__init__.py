@@ -7,18 +7,8 @@ from .types import RunResult
 from .config import CalRef, CalSource, Study, InitMode
 
 __all__ = [
-    "load_scenario",
-    "load_params",
-    "calibrate",
-    "optimize",
-    "evaluate",
-    "save_result",
-    "load_results",
-    "load_one_result",
+    # functions
+    "load_scenario", "load_params", "calibrate", "optimize", "evaluate", "save_result", "load_results", "load_one_result",
     # types
-    "RunResult",
-    "CalRef",
-    "CalSource",
-    "Study",
-    "InitMode"
+    "RunResult", "CalRef", "CalSource", "Study", "InitMode"
 ]

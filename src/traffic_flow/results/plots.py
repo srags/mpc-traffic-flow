@@ -211,11 +211,9 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
 
 from pathlib import Path
 from .analysis import MPCStats
-from .console import colored
-from ..paths import REPO_DIR
+from ..console import announce_save
 
-
-def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCStats, output_dir: Path, *, start_hour: float = 7.5) -> tuple[Path, Path]:
+def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCStats, output_dir: Path, *, start_hour: float = 7.5):
     """Save optimal_vsl.png and controlled.png, preserving the cc_plot layout.
 
     No solver/simulator runs or policy writes. Matplotlib is imported only here.
@@ -224,14 +222,6 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     result = run_result.optimization
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    def save(plot: Plotter, name: str) -> Path:
-        path = output_dir / name
-        try: plot.savefig(path)
-        finally: plt.close(plot.fig)
-        display = path.relative_to(REPO_DIR) if path.is_relative_to(REPO_DIR) else path
-        print(f"Saved to {colored(display, 'green')}")
-        return path
 
     p = Plotter(1, 1)
     display_vsl = np.where(result.vsl > run_result.params["v_free"][None, :], 150, result.vsl)
@@ -246,7 +236,8 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     }
     p[0].invert_yaxis()
     p[0].grid()
-    policy_path = save(p, "optimal_vsl.png")
+    p.savefig(output_dir / "optimal_vsl.png")
+    announce_save(output_dir / "optimal_vsl.png")
 
     n_time = traffic.velocity.shape[0] + 1
     minutes = np.arange(n_time) * spec.time_step * 60
@@ -279,11 +270,9 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     p[1] = {'title': f'METANET Simulation\n(TT: {np.round(result.baseline.total_travel_time, 2)} veh-hr, Delay: {np.round(stats.sim_tt - stats.ff_tt, 2)} veh-hr)'}
     p[2] = {'title': f'VSL Control\n(TT: {np.round(result.controlled.total_travel_time, 2)} veh-hr, Delay: {np.round(stats.opt_tt - stats.ff_tt, 2)} veh-hr)'}
     p[3] = {'title': '% Decrease in Delay'}
-    controlled_path = save(p, "controlled.png")
 
-
-    return policy_path, controlled_path
-
+    p.savefig(output_dir / "controlled.png")
+    announce_save(output_dir / "controlled.png")
 
 
 def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
@@ -320,7 +309,7 @@ def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
 
 from traffic_flow import evaluate
 
-def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16, batches: int = 4) -> Path:
+def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16, batches: int = 4):
   """Save the evaluate-based reveal using modeled inflow/queue and a 150 km/hr baseline."""
   import numpy as np
   from traffic_flow.results.plots import Plotter
@@ -360,10 +349,6 @@ def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16
               xlabel="Time (min)", ylabel="Distance (km)")
 
   p.fig.tight_layout()
-  output_dir = Path(output_dir)
   output_dir.mkdir(parents=True, exist_ok=True)
-  path = output_dir / "cc_reveal_evaluate.png"
-  p.savefig(path, dpi=150)
-  display = path.relative_to(REPO_DIR) if path.is_relative_to(REPO_DIR) else path
-  print(f"Saved to {colored(display, 'green')}")
-  return path
+  p.savefig(output_dir / "cc_reveal_evaluate.png", dpi=150)
+  announce_save(output_dir / "cc_reveal_evaluate.png")

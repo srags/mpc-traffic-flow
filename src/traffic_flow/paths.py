@@ -1,17 +1,8 @@
-import json
-from dataclasses import asdict, fields
-from hashlib import sha256
 from pathlib import Path
-from typing import Generic, TypeVar
-
-import numpy as np
-
-from .config import CalRef, MPCConfig, ScenarioConfig, StudyChoice, Study
-
-from os.path import abspath
+from .config import CalRef, StudyChoice
 import os
 
-REPO_DIR = Path(abspath(__file__)).parents[2]
+REPO_DIR = Path(os.path.abspath(__file__)).parents[2]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -32,4 +23,4 @@ def collection_dir(dataset: str, date: str, calibration: CalRef, study: StudyCho
 def find_npzs(dataset: str, date: str, calibration: CalRef, study: StudyChoice = None, file_name: str = "*") -> list[Path]:
   """Find saved-run directories without loading arrays or creating anything."""
   directory = collection_dir(dataset, date, calibration=calibration, study=study)
-  return [path for path in sorted(directory.glob(f"**/{file_name}.npz")) if path.is_file()]
+  return [path for path in sorted(directory.glob(f"{file_name}.npz")) if path.is_file()]

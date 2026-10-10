@@ -20,26 +20,25 @@ Run from anywhere:
 
     python experiments/I_24_constraint_plotting.py
 """
+import sys; from pathlib import Path
 
-import os
-import re
+
+REPO_DIR = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_DIR / "src"))
+
 import sys
 
 import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(REPO, "src"))
-
-from traffic_flow.results.console import colored
-from traffic_flow.pipeline import init_state
+from traffic_flow.console import announce_save, announce_file
 from traffic_flow.results.plots import Plotter
+from traffic_flow import load_results, Study
 
-from traffic_flow import CalSource, CalRef, load_params, load_scenario
-from traffic_flow.paths import REPO_DIR, cut_repo
-from traffic_flow.results.analysis import get_ff_tts
-from traffic_flow.model.simulation import METANET_Simulator
+from traffic_flow import CalSource, CalRef
+from traffic_flow.paths import REPO_DIR
+from traffic_flow.results.analysis import run_analysis
 
 DATE = "11_30"
 L, time_step = 0.4, 10/3600
@@ -64,31 +63,9 @@ LINE_COLOR = "#2b6b4f"
 FILL_COLOR = "#4e9858"
 MAXLINE_COLOR = "#cf2e1c"
 
-# ── Baseline ─────────────────────────────────────────────────────────────────
-
-def load_baseline(date=DATE):
-    """Uncontrolled delay for `date`, against which every sweep run is scored."""
-    scenario = load_scenario("i24", date)
-    traffic = scenario.traffic
-    params = load_params(scenario, CalRef(CalSource.FIXED_RAMPS, interval=None))
-    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=dict(enumerate(traffic.lanes)), real_data=True)
-    _, tts_base = sim.run(traffic.inflow, traffic.downstream_density, init_state(traffic))
-    v_free = params["v_free"]
-    ff_ttt = get_ff_tts(traffic.inflow, time_step, L, np.max(v_free, axis=0) if v_free.ndim == 2 else v_free)
-    return scenario, params, tts_base - ff_ttt, ff_ttt
-
-def cc_for(path, scenario, params, delay_base, ff_ttt):
-    """Controllable congestion for one saved VSL run, or None if it failed."""
-    traffic = scenario.traffic
-    vsl = np.load(path)
-    if (vsl == 150.0).all(): return None
-    sim = METANET_Simulator(T=time_step, l=L, params=params, lanes=dict(enumerate(traffic.lanes)), real_data=False)
-    _, tts = sim.run(traffic.inflow, traffic.downstream_density, init_state(traffic), vsl_speeds = vsl)
-    return float(np.clip((delay_base - (tts - ff_ttt)) / delay_base * 100, 0, 100))
-
 # ── Sweep loaders ────────────────────────────────────────────────────────────
 
-def load_scalar_sweep(subdir: str, ctx, max_value=None):
+def load_scalar_sweep(study: Study, max_value=None):
     """Sweeps keyed by a single integer, i.e. hold_length and speed_lb.
 
     `max_value` caps the swept parameter in that sweep's own units (time steps
@@ -99,37 +76,25 @@ def load_scalar_sweep(subdir: str, ctx, max_value=None):
     Returns (values, ccs, n_failed, n_capped) sorted by value, where both
     counts refer to the plotted range.
     """
-    path = SWEEP_ROOT / subdir
     out, failed, capped = [], 0, 0
-    for fname in os.listdir(path):
-        m = re.fullmatch(r"optimal_vsl_(\d+)\.npy", fname)
-        if not m: continue
-        value = int(m.group(1))
-        if max_value is not None and value > max_value:
-            capped += 1
-            continue
-        cc = cc_for(path / fname, *ctx)
-        if cc is None:
-            failed += 1
-            continue
-        out.append((value, cc))
+    for run in load_results("i24", DATE, CalRef(CalSource.FIXED_RAMPS, interval=None), study):
+        if max_value is not None and getattr(run.config, study) > max_value: capped += 1; continue
+        if not (run.optimization.vsl == 150.).all(): out.append((getattr(run.config, study), run_analysis(run).cc))
+        else: failed += 1
     out.sort()
     values = np.array([v for v, _ in out], dtype=float)
     ccs = np.array([c for _, c in out])
     return values, ccs, failed, capped
 
-def load_safety_grid(ctx) -> tuple[dict[tuple[float, float], float], int]:
+def load_safety_grid() -> tuple[dict[tuple[float, float], float], int]:
     """Full (temporal, spatial) -> CC grid, excluding failed runs."""
-    path = SWEEP_ROOT / "safety_sweep"
     grid, failed = {}, 0
-    for fname in os.listdir(path):
-        m = re.fullmatch(r"optimal_vsl_temp([\d.]+)_spat([\d.]+)\.npy", fname)
-        if not m: continue
-        cc = cc_for(path / fname, *ctx)
-        if cc is None:
-            failed += 1
-            continue
-        grid[(float(m.group(1)), float(m.group(2)))] = cc
+    for run in load_results("i24", DATE, CalRef(CalSource.FIXED_RAMPS, interval=None), Study.SAFETY_SWEEP):
+        if not (run.optimization.vsl == 150.).all(): 
+            temp, spat = run.config.safety_temporal, run.config.safety_spatial
+            assert temp is not None and spat is not None
+            grid[(float(temp), float(spat))] = run_analysis(run).cc
+        else: failed += 1
     return grid, failed
 
 def slice_grid(grid, axis, fixed_value, max_value=None):
@@ -163,16 +128,18 @@ def slice_grid(grid, axis, fixed_value, max_value=None):
             np.array([0] + [c for _, c in pts]),
             fixed_value, n_available - len(pts))
 
-
 def report_coverage(grid):
     """Print how many successful runs each candidate fixed value has, so the
     FIXED_SPATIAL / FIXED_TEMPORAL choices can be checked."""
     for axis, keep, label in (("temporal", 1, "spatial"), ("spatial", 0, "temporal")):
         counts = {}
         for key in grid: counts[key[keep]] = counts.get(key[keep], 0) + 1
-        summary = "  ".join(f"{v:g}:{n}" for v, n in sorted(counts.items()))
-        print(f"  points per fixed {label} bound ({axis} curve): {summary}")
-
+        PER_ROW = 11
+        vs, ns = map(list, zip(*sorted(counts.items())))
+        print(f"{axis} curve:")
+        for i in range(0, len(ns), PER_ROW):
+            print(tabulate(tablefmt="grid", tabular_data=[[label[0].upper()]+vs[i:i+PER_ROW]]+
+                           [['#' + axis[0].upper()]+ns[i:i+PER_ROW]]))
 
 # ── Plotting ─────────────────────────────────────────────────────────────────
 
@@ -195,8 +162,7 @@ def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
     ]): p[i] = {'xlabel': xtitle, 'ylabel': "Controllable congestion (%)", 'title': title}
     p.fig.tight_layout()
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print(f"\nFigure saved to: {colored(cut_repo(save_path), 'green', 'bold')}")
-
+    announce_save(save_path)
 
 def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3):
     """Controllable congestion over the full (temporal, spatial) safety grid.
@@ -244,25 +210,24 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
                         color="white" if values[i, j] < threshold else "black")
     p.fig.colorbar(im, ax=p[0], fraction=0.046, pad=0.02, label="Controllable congestion (%)")
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print(f"Heatmap saved to: {colored(cut_repo(save_path), 'bold', 'green')}")
+    announce_save(save_path)
     return p.fig
 
 
 if __name__ == "__main__":
-    scenario, params, delay_base, ff_ttt = ctx = load_baseline()
-    print(f"Baseline {DATE}: uncontrolled delay {delay_base:.2f} veh-hrs")
+    announce_file(Path(__file__))
 
-    hold_x, hold_y, hold_failed, _ = load_scalar_sweep("hold_length", ctx)
-    speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep("speed_lb", ctx, MAX_SPEED_LB)
-    grid, grid_failed = load_safety_grid(ctx)
+    hold_x, hold_y, hold_failed, _ = load_scalar_sweep(Study.HOLD_LENGTH)
+    speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep(Study.SPEED_LB, MAX_SPEED_LB)
+    grid, grid_failed = load_safety_grid()
 
     report_coverage(grid)
 
     temp_x, temp_y, temp_fixed, temp_capped = slice_grid(grid, "temporal", FIXED_SPATIAL, MAX_TEMP)
     spat_x, spat_y, spat_fixed, spat_capped = slice_grid(grid, "spatial", FIXED_TEMPORAL, MAX_SPAT)
 
-    print(tabulate(headers=["Constraint", "Runs Used", "Excluded", f"Capped at"],
-            tablefmt="grid", tabular_data=[
+    print(tabulate(headers=["Constraint", "Runs Used", "Excluded", f"Capped"],
+            tablefmt="outline", tabular_data=[
                 ["hold_length", len(hold_x), hold_failed, None],
                 ["speed_lb", len(speed_x), speed_failed, f"(U_min <= {MAX_SPEED_LB:g}) {speed_capped}"],
                 ["safety_sweep", len(grid), grid_failed, None],

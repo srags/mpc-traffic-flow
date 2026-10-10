@@ -2,10 +2,6 @@
 from dataclasses import dataclass
 import numpy as np
 
-from traffic_flow.config import CalRef, StudyChoice
-from traffic_flow.results.io import load_one_result
-from .console import colored
-from ..inputs.scenario import Scenario
 from ..types import *
 
 def mape(observed: np.ndarray | float, predicted: np.ndarray | float):
