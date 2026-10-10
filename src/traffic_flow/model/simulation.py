@@ -186,7 +186,7 @@ class METANET_Simulator:
             density[t], velocity[t], _, queue[t, 0] = state
             if t < self.time_steps: self.cur_state = self._step(t, state)
         
-        total_travel_time = self.T * (self.l * (density.sum(axis=0) @ self.lanes_array) + queue.sum())
+        total_travel_time = self.T * (self.l * (density[:-1,:].sum(axis=0) @ self.lanes_array) + queue.sum())
 
         return density, velocity, queue, total_travel_time
 

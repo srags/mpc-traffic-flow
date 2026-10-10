@@ -56,7 +56,7 @@ class CCReport:
                 ("Flow", traffic.flow, q_sim),
             )
         }
-        gt_tt, sim_tt = (spec.time_step * spec.L * np.sum(rho * traffic.lanes[np.newaxis, :])
+        gt_tt, sim_tt = (spec.time_step * spec.L * (rho * traffic.lanes[np.newaxis, :]).sum()
                          for rho in (traffic.density, p_sim))
         rows["Travel Time"] = f"{gt_tt:.2f} veh-hr vs {sim_tt:.2f} veh-hr (MAPE {abs(gt_tt - sim_tt) / gt_tt * 100:.2f}%)"
         return rows

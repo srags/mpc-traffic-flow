@@ -22,12 +22,12 @@ def cc_optimize(dataset: str, date: str, calibration: CalRef, study: StudyChoice
 
 if __name__ == "__main__":
   # regular run
-  if 1: cc_optimize(
-    dataset = "i24", date = "12_02",
-    calibration = CalRef(CalSource.FIXED_RAMPS, interval = None),
+  if 1: [cc_optimize(
+    dataset = "i24", date = x,
+    calibration = CalRef(CalSource.DYNAMIC, interval = None),
     study = None, speed_lb = 0,
     init_fixed = 150.0 # (InitMode.ADAPTIVE, 150.0)
-  )
+  ) for x in ["11_30"]]
   # safety_sweep
   if 0: cc_optimize(
     dataset = "i24", date = "11_30",
