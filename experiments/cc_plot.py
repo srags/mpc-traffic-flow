@@ -3,9 +3,9 @@ import sys; from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR / "src"))
 
+from traffic_flow.pipeline import replay
 from traffic_flow.results.analysis import mape, rmse, run_analysis
-from traffic_flow import CalRef, CalSource, InitMode, Study, load_one_result
-from traffic_flow.paths import REPO_DIR
+from traffic_flow import CalRef, CalSource, InitMode, Study, load_one_result, evaluate
 from traffic_flow.results.plots import save_cc_plots, save_reveal_plots
 from traffic_flow.console import announce_title, announce_file
 
@@ -17,20 +17,24 @@ START_HOUR = 7.5
 
 def main() -> None:
   result = load_one_result("i24", "11_28", calibration=CalRef(CalSource.FIXED_RAMPS, interval = None), study=None)
+  result = replay(result, until_ff=True)
   stats = run_analysis(result)
   traffic, uncontrolled, controlled = result.scenario.traffic, result.optimization.baseline, result.optimization.controlled
   announce_title("No Control")
 
-  data = [("Velocity", traffic.velocity, uncontrolled.velocity[:-1]), 
-          ("Density", traffic.density, uncontrolled.density[:-1]), 
-          ("Flow", traffic.flow, uncontrolled.density[:-1] * uncontrolled.velocity[:-1] * traffic.lanes)]
+  n = len(traffic.velocity)
+  rho, vel = uncontrolled.density[:n], uncontrolled.velocity[:n]
+  data = [("Velocity", traffic.velocity, vel), 
+          ("Density", traffic.density, rho), 
+          ("Flow", traffic.flow, rho * vel * traffic.lanes)]
   print(tabulate(headers=("Quantity", "Result"), tablefmt="outline", tabular_data=
                  [[name, f"MAPE {mape(a, b):.2f}%, RMSE {rmse(a, b):.2f}"] for name, a, b in data] + \
                  [["Travel Time", f"{stats.gt_tt:.2f} veh-hr vs {stats.sim_window_tt:.2f} veh-hr (MAPE {stats.tts_error:.2f}%)"]]))
 
-  spec, v_free = result.scenario.spec, result.params["v_free"][(slice(None),) + (None,)*(2-result.params["v_free"].ndim)]
-  observed_delay = (spec.L / traffic.velocity.T - spec.L / v_free) * 60
-  controlled_delay = (spec.L / controlled.velocity[:-1].T - spec.L / v_free) * 60
+  spec, v_free = result.scenario.spec, result.params["v_free"]
+  if v_free.ndim == 2: v_free = v_free[:n]
+  observed_delay = (spec.L / traffic.velocity - spec.L / v_free).T * 60
+  controlled_delay = (spec.L / controlled.velocity[:n] - spec.L / v_free).T * 60
   pct_decrease = np.where(observed_delay > 0.01, (observed_delay - controlled_delay) / observed_delay * 100, 0)
 
   announce_title("Optimized VSLs")

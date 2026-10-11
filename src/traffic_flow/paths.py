@@ -6,10 +6,6 @@ REPO_DIR = Path(os.path.abspath(__file__)).parents[2]
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
-def ensure_dir(path: Path):
-  path.mkdir(parents=True, exist_ok=True)
-  return path
-
 def cut_repo(path: Path): return path.relative_to(REPO_DIR)
 
 def collection_dir(dataset: str, date: str, calibration: CalRef, study: StudyChoice = None) -> Path:

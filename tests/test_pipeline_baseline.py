@@ -158,6 +158,7 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
     pytest.param("run_with_history", False, id="fixed-horizon"),
     pytest.param("run_with_history", True, id="drained"),
     pytest.param("run_with_opt", False, id="optimization-history"),
+    pytest.param("run_with_opt", True, id="optimization-history-drained"),
 ])
 def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method, until_ff):
     """Pin the new accounting with a nonzero terminal queue and unequal lanes."""

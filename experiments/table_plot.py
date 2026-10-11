@@ -1,4 +1,5 @@
 import sys; from pathlib import Path
+
 REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR / "src"))
 
@@ -7,6 +8,7 @@ from traffic_flow.console import announce_save, announce_title, announce_file, c
 from traffic_flow.results.plots import Plotter
 from traffic_flow.results.analysis import format_date_label, run_analysis
 from traffic_flow import load_one_result, CalRef, CalSource
+from traffic_flow.pipeline import replay
 
 # ── Dates to sweep ───────────────────────────────────────────────────────────
 STATIC_DATES = ["11_28", "11_29", "11_30"]
@@ -27,7 +29,8 @@ def run_static_analysis(dates, table_save, tex_save, bar_chart_save):
   avg_tts = np.empty((len(dates), 2))
   print(f"Dates: {colored(', '.join(dates), 'yellow')}")
   for i, date in enumerate(dates):
-    stats = run_analysis(load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None))
+    run = load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
+    stats = run_analysis(replay(run, until_ff=True))
     rows[i] = (stats.sim_error, stats.tts_error, stats.sim_tt, stats.opt_tt, stats.cc, stats.avg_tt_reduced_per_veh)
     avg_tts[i] = (stats.uncontrolled_avg_tts, stats.controlled_avg_tts)
 
@@ -65,9 +68,11 @@ def run_dynamic_analysis(dates, table_save):
   print(f"Dates: {colored(', '.join(dates), 'yellow')}")
 
   for i, date in enumerate(dates):
-    stats = run_analysis(load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None))
+    run = load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
+    stats = run_analysis(replay(run, until_ff=True))
     rows[i][:3] = stats.sim_error, stats.tts_error, stats.cc
-    stats = run_analysis(load_one_result("i24", date, calibration=CalRef(CalSource.DYNAMIC, interval=90), study=None))
+    run = load_one_result("i24", date, calibration=CalRef(CalSource.DYNAMIC, interval=90), study=None)
+    stats = run_analysis(replay(run, until_ff=True))
     rows[i][3:] = stats.sim_error, stats.tts_error, stats.cc
 
   save_table(table_save, HEADERS, 

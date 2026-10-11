@@ -39,6 +39,7 @@ from traffic_flow import load_results, Study
 from traffic_flow import CalSource, CalRef
 from traffic_flow.paths import REPO_DIR
 from traffic_flow.results.analysis import run_analysis
+from traffic_flow.pipeline import replay
 
 DATE = "11_30"
 L, time_step = 0.4, 10/3600
@@ -79,7 +80,8 @@ def load_scalar_sweep(study: Study, max_value=None):
     out, failed, capped = [], 0, 0
     for run in load_results("i24", DATE, CalRef(CalSource.FIXED_RAMPS, interval=None), study):
         if max_value is not None and getattr(run.config, study) > max_value: capped += 1; continue
-        if not (run.optimization.vsl == 150.).all(): out.append((getattr(run.config, study), run_analysis(run).cc))
+        if not (run.optimization.vsl == 150.).all(): 
+            out.append((getattr(run.config, study), run_analysis(replay(run, until_ff=True)).cc))
         else: failed += 1
     out.sort()
     values = np.array([v for v, _ in out], dtype=float)
@@ -93,7 +95,7 @@ def load_safety_grid() -> tuple[dict[tuple[float, float], float], int]:
         if not (run.optimization.vsl == 150.).all(): 
             temp, spat = run.config.safety_temporal, run.config.safety_spatial
             assert temp is not None and spat is not None
-            grid[(float(temp), float(spat))] = run_analysis(run).cc
+            grid[(float(temp), float(spat))] = run_analysis(replay(run, until_ff=True)).cc
         else: failed += 1
     return grid, failed
 

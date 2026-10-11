@@ -215,7 +215,7 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     output_dir.mkdir(parents=True, exist_ok=True)
 
     p = Plotter(1, 1)
-    display_vsl = np.where(result.vsl > run_result.params["v_free"][None, :], 150, result.vsl)
+    display_vsl = np.where(result.vsl > run_result.params["v_free"], 150, result.vsl)
     p.fig.colorbar(p[0].imshow(display_vsl.T, cmap='RdYlGn', aspect='auto', interpolation='none',
                              vmin=0, vmax=run_result.params['v_free'].max()), label='VSL speed (km/hr)')
     p[0] = {
@@ -230,7 +230,7 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     p.savefig(output_dir / "optimal_vsl.png")
     announce_save(output_dir / "optimal_vsl.png")
 
-    n_time = traffic.velocity.shape[0] + 1
+    n_time = traffic.velocity.shape[0]
     minutes = np.arange(n_time) * spec.time_step * 60
     tick_pos = np.linspace(0, n_time - 1, 5, dtype=int)
 
@@ -242,10 +242,10 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     ytick_pos = np.linspace(0, traffic.velocity.shape[1] - 1, 5, dtype=int)
     ytick_labels = [f"{i * spec.L:.1f}" for i in ytick_pos]
     p = Plotter(1, 4)
-    for i, mat in enumerate((traffic.velocity, result.baseline.velocity, result.controlled.velocity)):
+    for i, mat in enumerate((traffic.velocity, result.baseline.velocity[:n_time], result.controlled.velocity[:n_time])):
         p.fig.colorbar(
             mappable=p[i].imshow(mat.T, cmap='RdYlGn', aspect='auto', interpolation='none',
-                                vmin=0, vmax=max(traffic.velocity.max(), run_result.optimization.baseline.velocity[:-1].max())),
+                                vmin=0, vmax=max(traffic.velocity.max(), run_result.optimization.baseline.velocity[:n_time].max())),
             ax=p[i], label='Velocity (km/hr)', orientation='horizontal',
         )
     p.fig.colorbar(
@@ -309,7 +309,7 @@ def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16
     raise ValueError("CHECKPOINTS must be at least 2 and divisible by BATCHES")
   scenario, params = result.scenario, result.params
   spec = scenario.spec
-  baseline = result.optimization.baseline.velocity[:-1]
+  baseline = result.optimization.baseline.velocity[:spec.time_steps]
   # Keep the notebook's speed substitution to isolate the origin-mode change.
   optimal_vsl = np.where(result.optimization.vsl > params["v_free"], 150, result.optimization.vsl)
   free_vsl = np.full_like(optimal_vsl, 150)

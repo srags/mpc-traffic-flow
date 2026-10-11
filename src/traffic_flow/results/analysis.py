@@ -100,10 +100,10 @@ def run_analysis(run: RunResult) -> MPCStats:
     return MPCStats(
         gt_tt = gt_tt, sim_tt = sim_tt, opt_tt = opt_tt,
         sim_window_tt = float(spec.time_step * spec.L * (rho[:len(traffic.velocity)].sum(axis=0) @ traffic.lanes)),
-        ff_tt = get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),
-        sim_error = (abs(traffic.velocity - vel) / traffic.velocity).mean() * 100, 
-        num_veh = traffic.inflow.sum() * spec.time_step
-        # ff_tt = ff_tts_vkm(rho, vel, traffic.lanes, spec.time_step, spec.L, run.params["v_free"]),        
-        # sim_error = float(mape(traffic.velocity, vel[:len(traffic.velocity)])),
-        # num_veh = vehicles_served(rho, vel, traffic.lanes, beta, spec.time_step)
+        # ff_tt = get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),
+        # sim_error = (abs(traffic.velocity - vel) / traffic.velocity).mean() * 100, 
+        # num_veh = traffic.inflow.sum() * spec.time_step
+        ff_tt = ff_tts_vkm(rho, vel, traffic.lanes, spec.time_step, spec.L, run.params["v_free"]),        
+        sim_error = float(mape(traffic.velocity, vel[:len(traffic.velocity)])),
+        num_veh = vehicles_served(rho, vel, traffic.lanes, beta, spec.time_step)
     )

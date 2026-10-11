@@ -1,4 +1,6 @@
 from typing import cast
+from collections.abc import Iterator
+import warnings
 from ..types import *
 
 # ----------------------------
@@ -97,6 +99,7 @@ class METANET_Simulator:
         self.real_data: bool = real_data
         self.T: hr = T
         self.l: km = l
+        self._base_params: MetanetParams = params
         self.params: MetanetParams = params
         self.num_segments = params['tau'].shape[-1]
         self.lanes_array = np.array([lanes[i] for i in range(len(lanes))]) if lanes is not None else np.array([1.0] * self.num_segments)
@@ -106,6 +109,7 @@ class METANET_Simulator:
 
     def _initialize(self, demand: time_vec, downstream_density: time_vec, 
                     init_traffic_state: MetanetState, vsl_speeds: time_space | None = None):
+        self.params = self._base_params
         self.time_steps: int = len(downstream_density)
         assert self.num_segments == len(init_traffic_state.density)
         
@@ -207,61 +211,75 @@ class METANET_Simulator:
             )
         return MetanetState(density_tp1, velocity_tp1, flow_origin_tp1, queue_tp1)
 
+    def _states(self) -> Iterator[MetanetState]:
+        """Yield the initial state and every subsequent state; accumulate TTT."""
+        self._ttt: veh_hr = self.T * self.cur_state.queue
+        yield self.cur_state
+
+        for t in range(self.total_steps):
+            state = self.cur_state
+            road_vehicles = self.l * float(state.density @ self.lanes_array)
+
+            if self.until_ff and t >= self.time_steps:
+                assert self.drain_tol is not None
+                if road_vehicles <= self.drain_tol: return
+                self.downstream_density[t] = state.density[-1]
+
+            self.cur_state = self._step(t, state)
+            self._ttt += self.T * (road_vehicles + self.cur_state.queue)
+            yield self.cur_state
+
+        if self.until_ff:
+            assert self.drain_tol is not None
+            remaining = self.l * float(self.cur_state.density @ self.lanes_array)
+            if remaining > self.drain_tol:
+                warnings.warn(
+                    f"Drain limit reached with {remaining:.6g} vehicles "
+                    f"on the road (tolerance: {self.drain_tol:.6g}).",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+    
     def run(self, demand: time_vec, downstream_density: time_vec, init_traffic_state: MetanetState, 
         vsl_speeds: time_space | None = None) -> tuple[MetanetState, veh_hr]:
         self._initialize(demand, downstream_density, init_traffic_state, vsl_speeds)
-        ttt: veh_hr = self.T * float(self.l * (self.cur_state.density @ self.lanes_array) + self.cur_state.queue)
-        for t in range(self.time_steps):
-            self.cur_state = self._step(t, self.cur_state)
-            if t == self.time_steps-1: continue
-            ttt += self.T * float(self.l * (self.cur_state.density @ self.lanes_array) + self.cur_state.queue)
-        return self.cur_state, ttt
+        for _ in self._states(): pass
+        return self.cur_state, self._ttt
 
     def run_with_history(self, demand: time_vec, downstream_density: time_vec, init_traffic_state: MetanetState,
                         vsl_speeds: time_space | None = None) -> tuple[time_space, time_space, time_space, veh_hr]:
-
         self._initialize(demand, downstream_density, init_traffic_state, vsl_speeds)
         # Allocate histories
         density: time_space = np.empty((self.total_steps + 1, self.num_segments), dtype=float)
-        velocity: time_space = np.empty_like(density, dtype=float)
+        velocity: time_space = np.empty_like(density)
         queue: time_space = np.empty((self.total_steps + 1, 1), dtype=float)
-
-        steps_run = self.total_steps
-        for t in range(self.total_steps + 1):
-            state = self.cur_state
+        rows = 0
+        for t, state in enumerate(self._states()):
             density[t], velocity[t], _, queue[t, 0] = state
-            if self.until_ff and t >= self.time_steps:
-                remaining = self.l * float(state.density @ self.lanes_array)
-                if remaining <= self.drain_tol: # type: ignore
-                    steps_run = t
-                    break
-            if t < self.total_steps: 
-                if self.until_ff and t >= self.time_steps: self.downstream_density[t] = density[t, -1]       
-                self.cur_state = self._step(t, state)
-
-        density = density[:steps_run + 1]
-        velocity = velocity[:steps_run + 1]
-        queue = queue[:steps_run + 1]
-        
-        total_travel_time = self.T * (self.l * (density[:-1,:].sum(axis=0) @ self.lanes_array) + queue.sum())
-
-        return density, velocity, queue, total_travel_time
+            rows = t + 1
+        return density[:rows], velocity[:rows], queue[:rows], self._ttt
 
     def run_with_opt(self, demand: time_vec, downstream_density: time_vec, 
                      init_traffic_state: MetanetState, vsl_speeds: time_space | None = None,
                      ) -> tuple[time_space, time_space, time_space, time_space, time_space, veh_hr]:
         self._initialize(demand, downstream_density, init_traffic_state, vsl_speeds)
-        # Allocate histories
-        density: time_space = np.empty((self.total_steps + 1, self.num_segments), dtype=float)
-        velocity: time_space = np.empty_like(density, dtype=float)
-        queue: time_space = np.empty((self.total_steps + 1, 1), dtype=float)
-        flow_origin: time_space = np.empty((self.total_steps + 1, 1), dtype=float)
+        density = np.empty((self.total_steps + 1, self.num_segments), dtype=float)
+        velocity = np.empty_like(density)
+        queue = np.empty((self.total_steps + 1, 1), dtype=float)
+        flow_origin = np.empty_like(queue)
 
-        for t in range(self.total_steps + 1):
-            state = self.cur_state
+        rows = 0
+        for t, state in enumerate(self._states()):
             density[t], velocity[t], flow_origin[t, 0], queue[t, 0] = state
-            if t < self.time_steps: self.cur_state = self._step(t, state)
-            
-        total_travel_time: veh_hr = self.T * (self.l * (density[:-1].sum(axis=0) @ self.lanes_array) + queue.sum())
-        V_fd = calculate_V_arr(density[:-1], self.vsl_speeds, self.params["a"], self.params["p_crit"], self.params["v_free"])
-        return density, velocity, queue, flow_origin, V_fd, total_travel_time
+            rows = t + 1
+
+        density, velocity, queue, flow_origin = (array[:rows] for array in (density, velocity, queue, flow_origin))
+
+        steps = rows - 1
+        a, p_crit, v_free = (
+            value[:steps] if value.ndim == 2 else value
+            for value in (self.params["a"], self.params["p_crit"], self.params["v_free"])
+        )
+        V_fd = calculate_V_arr(density[:-1], self.vsl_speeds[:steps], a, p_crit, v_free)
+
+        return density, velocity, queue, flow_origin, V_fd, self._ttt

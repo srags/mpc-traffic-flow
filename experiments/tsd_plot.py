@@ -14,6 +14,7 @@ Saves to figs/i24_tsd.png and prints the delay / CC figures for each row.
 """
 import sys; from pathlib import Path
 
+
 REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR / "src"))
 
@@ -24,6 +25,7 @@ from traffic_flow import load_one_result, load_scenario, CalRef, CalSource
 from traffic_flow.console import announce_save, announce_file
 from traffic_flow.results.plots import Plotter
 from traffic_flow.results.analysis import format_date_label, run_analysis
+from traffic_flow.pipeline import replay
 
 DATES = ["11_28", "11_29", "11_30", "12_01", "12_02"]
 # Segments 0 and 1 are left uncontrolled (see Section 5.2); the control zone
@@ -46,11 +48,13 @@ if __name__ == "__main__":
   table = []
   for row, date in enumerate(DATES):
     run = load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
+    run = replay(run, until_ff=True)
+    n_time = len(run.scenario.traffic.velocity)
     stats = run_analysis(run)
     table.append([format_date_label(date), f"{stats.sim_tt:.2f}", f"{stats.sim_tt-stats.ff_tt:.2f}", f"{stats.cc:.2f}"])
     for col, (title, tsd) in enumerate(zip(
       ["Observed", "No control", "Optimal control"], 
-      [run.scenario.traffic.velocity, run.optimization.baseline.velocity[:-1, :], run.optimization.controlled.velocity[:-1, :]]
+      [run.scenario.traffic.velocity, run.optimization.baseline.velocity[:n_time], run.optimization.controlled.velocity[:n_time]]
       )):
       im = p[row, col].imshow(tsd.T, aspect="auto", origin="lower", cmap="RdYlGn", 
                               interpolation="none", vmin=0, vmax=vmax, extent=extent)

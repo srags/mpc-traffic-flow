@@ -96,3 +96,9 @@ def evaluate(scenario: Scenario, params: MetanetParams, vsl: time_space, until_f
     # baseline=simulate(scenario, params, vsl=None, real_data=True, until_ff=until_ff), 
     controlled=simulate(scenario, params, vsl=vsl, until_ff=until_ff)
   )
+
+from dataclasses import fields, replace
+def replay(run: RunResult, *, until_ff: bool) -> RunResult:
+    """Re-simulate a saved policy without optimization or file writes."""
+    return replace(run, optimization=evaluate(run.scenario, run.params,
+                          run.optimization.vsl, until_ff=until_ff))
