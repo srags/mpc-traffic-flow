@@ -79,8 +79,7 @@ class MPCStats:
     sim_error: float
     num_veh: float
     @property
-    def tts_error(self): return (abs(self.gt_tt - self.sim_tt) / self.gt_tt) * 100 
-    # def tts_error(self): return (abs(self.gt_tt - self.sim_window_tt) / self.gt_tt) * 100
+    def tts_error(self): return abs(self.gt_tt - self.sim_window_tt) / self.gt_tt * 100 
     @property
     def cc(self): return np.clip((self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100, 0, 100)
     @property
