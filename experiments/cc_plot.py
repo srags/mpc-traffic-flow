@@ -26,7 +26,7 @@ def main() -> None:
           ("Flow", traffic.flow, uncontrolled.density[:-1] * uncontrolled.velocity[:-1] * traffic.lanes)]
   print(tabulate(headers=("Quantity", "Result"), tablefmt="outline", tabular_data=
                  [[name, f"MAPE {mape(a, b):.2f}%, RMSE {rmse(a, b):.2f}"] for name, a, b in data] + \
-                 [["Travel Time", f"{stats.gt_tt:.2f} veh-hr vs {stats.sim_tt:.2f} veh-hr (MAPE {mape(stats.gt_tt, stats.sim_tt):.2f}%)"]]))
+                 [["Travel Time", f"{stats.gt_tt:.2f} veh-hr vs {stats.sim_window_tt:.2f} veh-hr (MAPE {mape(stats.gt_tt, stats.sim_tt):.2f}%)"]]))
 
   spec, v_free = result.scenario.spec, result.params["v_free"][(slice(None),) + (None,)*(2-result.params["v_free"].ndim)]
   observed_delay = (spec.L / traffic.velocity.T - spec.L / v_free) * 60

@@ -115,7 +115,7 @@ def test_named_bundles_and_lookup_find_the_right_run(tmp_path, monkeypatch, run_
     assert list(tmp_path.iterdir()) == []  # Resolving paths does not create anything.
 
     other = replace(run_result, config=replace(config, speed_lb=60.))
-    first = save_result(run_result, calibration=calibration, study=study)
+    first = save_result(run_result, calibration=calibration, study=study, file_name="run")
     second = save_result(other, calibration=calibration, study=study, file_name="run2")
     assert (first, second) == (directory / "run.npz", directory / "run2.npz")
     # An identical run in another study must not leak into this lookup.
@@ -133,11 +133,9 @@ def test_named_bundles_and_lookup_find_the_right_run(tmp_path, monkeypatch, run_
         assert paths.find_npzs(
             spec.freeway, "missing", calibration=calibration, study=study,
         ) == []
-        # The new discovery searches recursively, including nested studies
-        # when the caller selects their parent calibration directory.
-        assert paths.find_npzs(spec.freeway, spec.date, calibration=calibration) == sorted([
-            ordinary, first, second,
-        ])
+        # Default discovery stays in the selected directory: nested studies
+        # must not leak into the ordinary-run lookup.
+        assert paths.find_npzs(spec.freeway, spec.date, calibration=calibration) == [ordinary]
 
     selected = result_io.load_results(
         spec.freeway, spec.date, calibration=calibration, study=study,
@@ -148,6 +146,7 @@ def test_named_bundles_and_lookup_find_the_right_run(tmp_path, monkeypatch, run_
     np.testing.assert_array_equal(selected[0].optimization.vsl, run_result.optimization.vsl)
     assert selected[0].config.pred_horizon == config.pred_horizon
     assert len(result_io.load_results(spec.freeway, spec.date, calibration=calibration, study=study)) == 2
+    assert len(result_io.load_results(spec.freeway, spec.date, calibration=calibration)) == 1
     assert result_io.load_results(spec.freeway, "missing", calibration=calibration, study=study) == []
 
     # A misplaced bundle is an input error, even if the filter would exclude it.

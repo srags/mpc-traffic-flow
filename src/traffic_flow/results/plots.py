@@ -56,10 +56,7 @@ class Plotter:
 
 
 
-def plot_velocity_comparison(
-    observed: time_space,
-    simulated: time_space,
-) -> Plotter:
+def plot_velocity_comparison(observed: time_space, simulated: time_space) -> Plotter:
     """Compare aligned (time, segment) velocity arrays in km/hr."""
     if observed.ndim != 2 or simulated.ndim != 2:
         raise ValueError("Both arrays must have shape (time, segment)")
@@ -127,7 +124,6 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
     print(time_steps, num_segm)
 
     start_state = MetanetState(np.full(num_segm, traffic_demand[0]/(lane_map[0] * 90)), np.full(num_segm, 90), traffic_demand[0], 0)
-
     
     if params is not None:
         sim = METANET_Simulator(T=T, l=l, params=params, lanes=lane_map, real_data=False)
@@ -151,7 +147,7 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
     lane_array = np.tile(lane_list, (time_steps+1, 1))
     
     #plot velocity, density, amd flow in order of plot_var
-    p = Plotter(h, w, figsize=(30, 3.5*h))
+    p = Plotter(h, w, figsize=(30, 7*h))
     i = 0
     #set title for first and second column
 
@@ -200,14 +196,9 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
         ax.set_ylabel('Distance (km)', fontsize=22, fontname='Times New Roman')
         ax.tick_params(labelsize=20)
     
-    # Plot a horizontal line at 2.5 km (segment 5)
-    # for ax in axs:
-    #     ax.axhline(10, color='black', linestyle='--')
-    p.savefig('vsl_control.png', dpi=300, bbox_inches='tight')
+    # p.savefig('vsl_control.png', dpi=300, bbox_inches='tight')
     p.fig.subplots_adjust(hspace=0.4)
     p.show()
-
-    
 
 from pathlib import Path
 from .analysis import MPCStats

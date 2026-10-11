@@ -1,3 +1,4 @@
+from typing import cast
 from ..types import *
 
 # ----------------------------
@@ -68,16 +69,40 @@ def param_at(param, t: int, i: int):
     if np.ndim(param) == 2: return float(param[t, i])
     raise ValueError("Unexpected parameter dimensions")
 
+def _extend_params_for_drain(params: MetanetParams, time_steps: int,
+                             total_steps: int, num_segments: int) -> MetanetParams:
+    """Copy of `params` covering the drain period, with on-ramp inflow switched off.
+
+    Time-varying (2D) parameters hold their last row. The ramp term `r` is made 2D so
+    it can be zeroed after `time_steps`: it is a constant inflow, so leaving it on would
+    keep feeding the corridor and it would never empty.
+    """
+    extended: MetanetParams = params.copy()
+    pad = total_steps - time_steps
+    for key, value in params.items():
+        if isinstance(value, np.ndarray) and np.ndim(value) == 2:
+            extended[key] = np.vstack([value, np.tile(value[-1], (pad, 1))])
+    r = np.asarray(params.get("r", 0.0), dtype=float)
+    if r.ndim == 0: r = np.full(num_segments, float(r))
+    if r.ndim == 1: r = np.tile(r, (time_steps, 1))
+    extended['r'] = np.vstack([r[:time_steps], np.zeros((pad, num_segments))])
+    return cast(MetanetParams, extended)
 
 class METANET_Simulator:
     """Wrapper class for running METANET simulations with a given set of parameters and initial state."""
     def __init__(self, T: hr, l: km, params: MetanetParams, lanes: lane_map | None = None, real_data: bool = False):
+        self.until_ff = False # can switch
+        self.drain_tol: float | None = None
+
         self.real_data: bool = real_data
         self.T: hr = T
         self.l: km = l
         self.params: MetanetParams = params
         self.num_segments = params['tau'].shape[-1]
         self.lanes_array = np.array([lanes[i] for i in range(len(lanes))]) if lanes is not None else np.array([1.0] * self.num_segments)
+
+        self.drain_tol = 1e-3 * sum(self.lanes_array[i] for i in range(self.num_segments)) * self.l
+        self.max_drain_steps = None
 
     def _initialize(self, demand: time_vec, downstream_density: time_vec, 
                     init_traffic_state: MetanetState, vsl_speeds: time_space | None = None):
@@ -98,6 +123,26 @@ class METANET_Simulator:
             ),
             initial_queue
         )
+
+        if self.until_ff:
+            # Every segment is floored at 1e-4 veh/km/lane, so this is the emptiest the
+            # corridor can ever be; a tolerance at or below it would never be reached.
+            empty_floor = 1e-4 * sum(self.lanes_array[i] for i in range(self.num_segments)) * self.l
+            if self.drain_tol is None:
+                self.drain_tol = 10 * empty_floor
+            elif self.drain_tol <= empty_floor:
+                raise ValueError(
+                    f"drain_tol={self.drain_tol:g} is at or below the density floor "
+                    f"({empty_floor:.2e} vehicles), so the corridor can never get that empty.")
+            pad = int(10 * self.time_steps if self.max_drain_steps is None else self.max_drain_steps)
+            self.total_steps = self.time_steps + pad
+            self.demand = np.concatenate([self.demand, np.zeros(pad)])
+            self.downstream_density = np.concatenate(
+                [downstream_density, np.full(pad, downstream_density[-1])])
+            self.vsl_speeds = np.vstack([self.vsl_speeds, np.full((pad, self.num_segments), 1e4)])
+            self.params = _extend_params_for_drain(self.params, self.time_steps, self.total_steps, self.num_segments)
+        else:
+            self.total_steps = self.time_steps
 
     def _step(self, t: int, cur_state: MetanetState) -> MetanetState:
         density_t, velocity_t, flow_origin_t, queue_t = cur_state
@@ -160,7 +205,6 @@ class METANET_Simulator:
             flow_origin_tp1 = origin_flow_dynamics_MN(
                 self.demand[t + 1], density_tp1[0], queue_tp1, self.lanes_array[0], self.T, p_max=180.0, p_crit=pcrit0, q_capacity=qcap0
             )
-    
         return MetanetState(density_tp1, velocity_tp1, flow_origin_tp1, queue_tp1)
 
     def run(self, demand: time_vec, downstream_density: time_vec, init_traffic_state: MetanetState, 
@@ -178,34 +222,46 @@ class METANET_Simulator:
 
         self._initialize(demand, downstream_density, init_traffic_state, vsl_speeds)
         # Allocate histories
-        density: time_space = np.empty((self.time_steps + 1, self.num_segments), dtype=float)
-        velocity: time_space = np.empty_like(density)
-        queue: time_space = np.empty((self.time_steps + 1, 1), dtype=float)
+        density: time_space = np.empty((self.total_steps + 1, self.num_segments), dtype=float)
+        velocity: time_space = np.empty_like(density, dtype=float)
+        queue: time_space = np.empty((self.total_steps + 1, 1), dtype=float)
 
-        for t in range(self.time_steps + 1):
+        steps_run = self.total_steps
+        for t in range(self.total_steps + 1):
             state = self.cur_state
             density[t], velocity[t], _, queue[t, 0] = state
-            if t < self.time_steps: self.cur_state = self._step(t, state)
+            if self.until_ff and t >= self.time_steps:
+                remaining = self.l * float(state.density @ self.lanes_array)
+                if remaining <= self.drain_tol: # type: ignore
+                    steps_run = t
+                    break
+            if t < self.total_steps: 
+                if self.until_ff and t >= self.time_steps: self.downstream_density[t] = density[t, -1]       
+                self.cur_state = self._step(t, state)
+
+        density = density[:steps_run + 1]
+        velocity = velocity[:steps_run + 1]
+        queue = queue[:steps_run + 1]
         
         total_travel_time = self.T * (self.l * (density[:-1,:].sum(axis=0) @ self.lanes_array) + queue.sum())
 
         return density, velocity, queue, total_travel_time
 
     def run_with_opt(self, demand: time_vec, downstream_density: time_vec, 
-                     init_traffic_state: MetanetState, vsl_speeds: time_space | None = None
+                     init_traffic_state: MetanetState, vsl_speeds: time_space | None = None,
                      ) -> tuple[time_space, time_space, time_space, time_space, time_space, veh_hr]:
         self._initialize(demand, downstream_density, init_traffic_state, vsl_speeds)
         # Allocate histories
-        density: time_space = np.empty((self.time_steps + 1, self.num_segments), dtype=float)
-        velocity: time_space = np.empty_like(density)
-        queue: time_space = np.empty((self.time_steps + 1, 1), dtype=float)
-        flow_origin: time_space = np.empty((self.time_steps + 1, 1), dtype=float)
+        density: time_space = np.empty((self.total_steps + 1, self.num_segments), dtype=float)
+        velocity: time_space = np.empty_like(density, dtype=float)
+        queue: time_space = np.empty((self.total_steps + 1, 1), dtype=float)
+        flow_origin: time_space = np.empty((self.total_steps + 1, 1), dtype=float)
 
-        for t in range(self.time_steps + 1):
+        for t in range(self.total_steps + 1):
             state = self.cur_state
             density[t], velocity[t], flow_origin[t, 0], queue[t, 0] = state
             if t < self.time_steps: self.cur_state = self._step(t, state)
             
-        total_travel_time: veh_hr = self.T * (self.l * (density.sum(axis=0) @ self.lanes_array) + queue.sum())
-        V_fd = calculate_V_arr(density[0:-1], self.vsl_speeds, self.params["a"], self.params["p_crit"], self.params["v_free"])
+        total_travel_time: veh_hr = self.T * (self.l * (density[:-1].sum(axis=0) @ self.lanes_array) + queue.sum())
+        V_fd = calculate_V_arr(density[:-1], self.vsl_speeds, self.params["a"], self.params["p_crit"], self.params["v_free"])
         return density, velocity, queue, flow_origin, V_fd, total_travel_time

@@ -22,7 +22,7 @@ if __name__ == "__main__":
   # regular run
   if 1: [cc_optimize(
     dataset = "i24", date = x,
-    calibration = CalRef(CalSource.DYNAMIC, interval = 90),
+    calibration = CalRef(CalSource.FIXED_RAMPS, interval = None),
     study = None, speed_lb = 0,
     init_fixed = 150.0 # (InitMode.ADAPTIVE, 150.0)
   ) for x in ["11_30"]]

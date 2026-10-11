@@ -1,7 +1,6 @@
 """Numerical CC report inputs; no plotting or file writes."""
 from dataclasses import dataclass
 import numpy as np
-
 from ..types import *
 
 def mape(observed: np.ndarray | float, predicted: np.ndarray | float):
@@ -21,86 +20,50 @@ def get_ff_tts(demand_profile, time_step, length, v_free):
     ff_travel_time = sum(length / v for v in v_free)  # hours
     return num_vehicles * ff_travel_time
 
-from math import ceil, floor
+def ff_tts_vkm(density: time_space, velocity: time_space, lane_counts: space_vec, 
+               time_step: hr, length, v_free: time_space | space_vec):
+    """Free-flow TTS for the travel a run actually served, in vehicle-hours.
 
-def get_virtual_trajectory(speed_field, time_start, space_start, d_time, d_space, direction=-1):
-    # Initialize the trajectory mask with zeros
-    trajectory_mask = np.zeros_like(speed_field)
+    Vehicle-km in each segment, charged at that segment's free-flow speed:
 
-    # Let's change the units of the speed field so what we can use it as the slope of the line in the time-space plot
-    # d_space is in miles per y_bin, and d_time is in seconds per x_bin 
-    # The speed field is in mile per hour
-    # Let's convert the speed field to miles per second
-    speed_field = speed_field / 3600
-    # Now let's account for the direction of the vechicles on the road
-    speed_field *= direction
-    # and let's convert the speed field to y_bin per x_bin  
-    speed_field = speed_field * d_time / d_space
+        veh_km_i = sum_t rho_i(t) v_i(t) lanes_i * time_step * length
+        TTS_ff   = sum_i veh_km_i / v_free_i
 
-    # Forward propagation
-    forward_time_points = []
-    forward_space_points = []
+    Measuring travel rather than counting trips is what makes this correct when
+    ramps are present: a vehicle entering at an on-ramp contributes vehicle-km only
+    to the segments it uses, and one leaving at an off-ramp stops contributing there.
+    `get_ff_tts` instead counts mainline arrivals only and charges each the whole
+    corridor, which on I-24 ignores the on-ramp inflows (roughly twice the mainline
+    demand) and overcharges everything exiting at an off-ramp.
 
-    time_current, space_current = time_start, space_start
-    while 0 <= time_current < speed_field.shape[1] and 0 <= space_current < speed_field.shape[0]:
-        # Store the current points in the trajectory points list
-        forward_time_points.append(time_current)
-        forward_space_points.append(space_current)
-        # Get the speed at the current point
-        speed = speed_field[int(space_current), int(time_current)]
+    Args:
+        density, velocity: (time_steps, num_segments) per-lane fields from one run.
+        lane_counts: (num_segments,) lanes per segment.
+        time_step, length: hours per step, km per segment.
+        v_free: (num_segments,) free-flow speeds, or (time_steps, num_segments) for a
+            time-varying calibration, in which case the max over time is used.
 
-        # The speed is the slope of the line in the time-space plot
-        # For each time step, let's draw a line from the current point and follow the slope until we reach another bin
-        # Let's get the time step to reach the next bin, which is the minimum between the time to reach the next time bin and the time to reach the next space bin
-        time_to_next_time_bin = floor(time_current + 1) - time_current
-        # and now the time to reach the next space bin
-        if direction == 1:
-            time_to_next_space_bin = (floor(space_current + 1) - space_current) / speed
-        elif direction == -1:
-            time_to_next_space_bin = (space_current - ceil(space_current - 1)) / speed
-        # Let's get the minimum of the two
-        time_step = min(abs(time_to_next_time_bin), abs(time_to_next_space_bin))
-        # Let's move to the next point in time and space
-        time_current += time_step
-        space_current += time_step * speed
-    
-    
-    # Backward propagation
-    backward_time_points = []
-    backward_space_points = []
-    time_current, space_current = time_start, space_start
-    while 0 <= time_current < speed_field.shape[1] and 0 <= space_current < speed_field.shape[0]:
-        # Store the current points in the trajectory points list
-        backward_time_points.append(time_current)
-        backward_space_points.append(space_current)
-        # Get the speed at the current point
-        speed = speed_field[int(space_current), int(time_current)]
+    Returns:
+        free flow TTS (vehicle-hours)
+    """
+    v_free = np.max(v_free, axis=0) if np.ndim(v_free) == 2 else v_free
+    veh_km = (density * velocity * lane_counts).sum(axis=0) * time_step * length
+    return float((veh_km / v_free).sum())
 
-        # The speed is the slope of the line in the time-space plot
-        # For each time step, let's draw a line from the current point and follow the slope until we reach another bin
-        # Let's get the time step to reach the previous bin, which is the minimum between the time to reach the next time bin and the time to reach the next space bin
-        time_to_previous_time_bin = time_current - ceil(time_current - 1) 
-        # and now the time to reach the previous space bin
-        if direction == 1: 
-            time_to_previous_space_bin = (space_current - ceil(space_current - 1)) / speed
-        elif direction == -1: 
-            time_to_previous_space_bin = (floor(space_current + 1) - space_current) / speed
-        # Let's get the minimum of the two
-        time_step = min(abs(time_to_previous_time_bin), abs(time_to_previous_space_bin))
-        # Let's move to the next point in time and space
-        time_current -= time_step
-        space_current -= time_step * speed
-    
-    # Let's reverse the backward points and add them to the trajectory points 
-    backward_time_points.reverse()
-    backward_space_points.reverse()
-    
-    # and now we add them to the beginning of the time_points and space_points
-    time_points = backward_time_points + forward_time_points
-    space_points = backward_space_points + forward_space_points
+def vehicles_served(density: time_space, velocity: time_space, lane_counts: space_vec, 
+                    beta: space_vec | time_space, time_step: hr):
+    """Vehicles that left the corridor over a run.
 
-    return time_points, space_points       
-
+    A vehicle departs either out of the last segment or at an off-ramp, which takes
+    `q_i * beta_i / (1 - beta_i)` because `density_dynamics` removes `outflow/(1-beta)`.
+    `get_num_veh` counts mainline arrivals only, so on I-24 it misses the on-ramp
+    inflows -- roughly twice the mainline demand -- and per-vehicle metrics built on it
+    are too large by that factor. Over a run that drains (`until_ff=True`) this equals
+    the vehicles that entered.
+    """
+    q = density * velocity * lane_counts
+    departures = q[:, -1] + (q * beta / (1 - beta)).sum(axis=1)
+    return float(departures.sum() * time_step)
 
 HOLIDAY_DATES = {(11, 24), (11, 25)}
 def format_date_label(date_str: str, year=2022):
@@ -110,14 +73,14 @@ def format_date_label(date_str: str, year=2022):
     tag = 'Holiday' if (month, day) in HOLIDAY_DATES else datetime.date(year, month, day).strftime('%a')
     return f"{month:02d}/{day:02d} ({tag})"
 
-
 @dataclass(frozen=True)
 class MPCStats:
-    gt_tt: veh_hr; sim_tt: veh_hr; opt_tt: veh_hr; ff_tt: veh_hr
+    gt_tt: veh_hr; sim_tt: veh_hr; opt_tt: veh_hr; ff_tt: veh_hr; sim_window_tt: veh_hr
     sim_error: float
     num_veh: float
     @property
-    def tts_error(self): return (abs(self.gt_tt - self.sim_tt) / self.gt_tt) * 100
+    def tts_error(self): return (abs(self.gt_tt - self.sim_tt) / self.gt_tt) * 100 
+    # def tts_error(self): return (abs(self.gt_tt - self.sim_window_tt) / self.gt_tt) * 100
     @property
     def cc(self): return np.clip((self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100, 0, 100)
     @property
@@ -132,11 +95,16 @@ def run_analysis(run: RunResult) -> MPCStats:
     gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes) 
     sim_tt, opt_tt = run.optimization.baseline.total_travel_time, run.optimization.controlled.total_travel_time
     ffv = run.params['v_free']
+    rho, vel = run.optimization.baseline.density[:-1], run.optimization.baseline.velocity[:-1]
+    beta = run.params["beta"]
+    if beta.ndim == 2: beta = beta[np.minimum(np.arange(len(rho)), len(beta)-1)]
     return MPCStats(
-        gt_tt     = gt_tt,
-        sim_tt    = sim_tt,
-        opt_tt    = opt_tt,
-        ff_tt     = get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),
-        sim_error = (abs(traffic.velocity - run.optimization.baseline.velocity[:-1]) / traffic.velocity).mean() * 100, 
-        num_veh   = traffic.inflow.sum() * spec.time_step
+        gt_tt = gt_tt, sim_tt = sim_tt, opt_tt = opt_tt,
+        sim_window_tt = float(spec.time_step * spec.L * (rho[:len(traffic.velocity)].sum(axis=0) @ traffic.lanes)),
+        ff_tt = get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),
+        sim_error = (abs(traffic.velocity - vel) / traffic.velocity).mean() * 100, 
+        num_veh = traffic.inflow.sum() * spec.time_step
+        # ff_tt = ff_tts_vkm(rho, vel, traffic.lanes, spec.time_step, spec.L, run.params["v_free"]),        
+        # sim_error = float(mape(traffic.velocity, vel[:len(traffic.velocity)])),
+        # num_veh = vehicles_served(rho, vel, traffic.lanes, beta, spec.time_step)
     )

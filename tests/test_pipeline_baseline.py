@@ -1,7 +1,9 @@
 """Representative numerical regressions; no solver or plot runs."""
 
+import ast
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
@@ -14,9 +16,10 @@ sys.path.insert(0, str(ROOT / "src"))
 from traffic_flow import load_params, load_scenario
 from traffic_flow.results.io import load_npz
 from traffic_flow.config import CalRef
-from traffic_flow.pipeline import simulate_scenario
+from traffic_flow.pipeline import simulate
 
 REFERENCE = "4f82654b1d6c9812f7577d21e33b1df406099edd"
+MAIN_REFERENCE = "b332162f1f08acd366778a597e21c6ade026311b"
 RTOL, ATOL = 1e-10, 1e-10
 DATA = ROOT / "data/i24/i24_11_28"
 PARAMS = DATA / "calibration_static/fixed_ramping"
@@ -83,9 +86,9 @@ def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, cont
         pytest.fail(f"Historical policy is missing: {VSL}")
     controls = (np.load(VSL, allow_pickle=False) if controlled
                 else np.full((spec.time_steps, spec.num_segments), 150.))
-    actual = simulate_scenario(
-        traffic, load_params(scenario, calibration=CalRef()),
-        T=spec.time_step, l=spec.L, vsl=controls, real_data=real_data,
+    actual = simulate(
+        scenario, load_params(scenario, calibration=CalRef()),
+        vsl=controls, real_data=real_data,
     )
     _, _, _, lanes, inflow, downstream, density, velocity = old
     simulator = baseline.traffic_sim.METANET_Simulator(
@@ -151,7 +154,12 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
     assert path.read_bytes() == before
 
 
-def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch):
+@pytest.mark.parametrize("method,until_ff", [
+    pytest.param("run_with_history", False, id="fixed-horizon"),
+    pytest.param("run_with_history", True, id="drained"),
+    pytest.param("run_with_opt", False, id="optimization-history"),
+])
+def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method, until_ff):
     """Pin the new accounting with a nonzero terminal queue and unequal lanes."""
     from unittest.mock import Mock
 
@@ -159,21 +167,28 @@ def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch)
     from traffic_flow.model.simulation import METANET_Simulator
     from traffic_flow.types import MetanetState
 
+    terminal_density = [0.1, 0.2] if until_ff else [500, 600]
     states = [
         MetanetState(np.array(rho, dtype=float), np.full(2, 90.), 100., queue)
-        for rho, queue in (([10, 20], 1.), ([30, 40], 2.), ([500, 600], 7.))
+        for rho, queue in (([10, 20], 1.), ([30, 40], 2.), (terminal_density, 7.))
     ]
     simulator = METANET_Simulator(
         T=0.1, l=0.5, params=default_metanet_params(2), lanes={0: 2., 1: 3.},
     )
+    simulator.until_ff = until_ff
+    simulator.drain_tol = 1.0
+    simulator.max_drain_steps = 2
     step = Mock(side_effect=states[1:])
     monkeypatch.setattr(simulator, "_step", step)
-    density, velocity, queue, ttt = simulator.run_with_history(
-        np.full(3, 100.), np.zeros(2), states[0],
+    steps = 1 if until_ff else 2
+    result = getattr(simulator, method)(
+        np.full(steps, 100.), np.zeros(steps), states[0],
     )
+    density, velocity, queue = result[:3]
+    ttt = result[-1]
 
     assert step.call_count == 2
-    np.testing.assert_array_equal(density, [[10, 20], [30, 40], [500, 600]])
+    np.testing.assert_array_equal(density, [[10, 20], [30, 40], terminal_density])
     np.testing.assert_array_equal(velocity, np.full((3, 2), 90.))
     np.testing.assert_array_equal(queue, [[1], [2], [7]])
     # 0.1 * (0.5 * (10*2 + 20*3 + 30*2 + 40*3) + 1 + 2 + 7)
@@ -246,62 +261,150 @@ def test_synthetic_missing_or_malformed_policy(tmp_path):
         load_synthetic_results([5500], tmp_path, skip_missing=True)
 
 
-def test_cc_report_keeps_metrics_and_printed_summary(monkeypatch, capsys):
-    """Moving cc.py must preserve report values, without plotting or solving."""
-    from unittest.mock import Mock
+@pytest.fixture(scope="module")
+def latest_main():
+    """Read the pinned main implementation without checkout, imports or file writes."""
+    source = subprocess.check_output(
+        ["git", "show", f"{MAIN_REFERENCE}:src/traffic_sim.py"], cwd=ROOT, text=True,
+    )
+    namespace = {}
+    exec(compile(source, f"{MAIN_REFERENCE}:src/traffic_sim.py", "exec"), namespace)
+    # Load just the numerical metrics, not cc_analysis's plotting/data imports.
+    source = subprocess.check_output(
+        ["git", "show", f"{MAIN_REFERENCE}:src/cc_analysis.py"], cwd=ROOT, text=True,
+    )
+    functions = [node for node in ast.parse(source).body
+                 if isinstance(node, ast.FunctionDef)
+                 and node.name in {"ff_tts_vkm", "vehicles_served"}]
+    assert len(functions) == 2
+    exec(compile(ast.Module(body=functions, type_ignores=[]),
+                 f"{MAIN_REFERENCE}:src/cc_analysis.py", "exec"), namespace)
+    return SimpleNamespace(**namespace)
 
+
+@pytest.fixture(scope="module", params=[False, True], ids=["static", "time-varying"])
+def drain_case(request):
+    """Small corridor with unequal lanes, both ramp types and a nontrivial drain."""
     from traffic_flow.config import ScenarioConfig
     from traffic_flow.inputs.scenario import Scenario
     from traffic_flow.model.parameters import default_metanet_params
-    from traffic_flow.types import OptimizationResult, SimulationResult, TrafficData
+    from traffic_flow.types import TrafficData
 
-    spec = ScenarioConfig("test", "day", 1., 2, 0.01, 2)
-    density = np.array([[10., 20.], [10., 20.]])
-    velocity = np.array([[50., 99.], [50., 99.]])
-    lanes = np.array([2., 3.])
+    n, segments = 30, 3
+    spec = ScenarioConfig("test", "day", 0.4, segments, 5 / 3600, n)
+    density = np.tile([15., 18., 20.], (n, 1))
+    velocity = np.full((n, segments), 90.)
+    lanes = np.array([3., 4., 2.])
     traffic = TrafficData(
         density, density * velocity * lanes, velocity, lanes,
-        np.full(2, 5000.), np.full(2, 20.), density[0].copy(), velocity[0].copy(),
+        np.full(n, 2000.), np.full(n, 10.), density[0].copy(), velocity[0].copy(),
     )
-    scenario = Scenario(spec, traffic)
-    params = default_metanet_params(2)
-    params["v_free"] = np.full(2, 100.)
-    # The terminal row and diagnostic TTS deliberately differ: neither belongs
-    # in the fit comparison or the saved policy's modeled-origin CC calculation.
-    diagnostic = SimulationResult(
-        np.vstack((density, [999., 999.])),
-        np.vstack((velocity, [999., 999.])), np.zeros((3, 1)), 999.,
-    )
-    result = OptimizationResult(
-        np.array([[120., 100.], [80., 90.]]),
-        diagnostic._replace(total_travel_time=12.),
-        diagnostic._replace(velocity=np.array([[80., 100.], [80., 100.], [999., 999.]]),
-                            total_travel_time=7.),
-    )
-    # Protect supplied observations, parameters, policy and saved histories.
-    for array in (*traffic, *params.values(), result.vsl, *result.baseline,
-                  *result.controlled, *diagnostic):
-        if isinstance(array, np.ndarray):
-            array.flags.writeable = False
-    simulate = Mock(return_value=diagnostic)
-    monkeypatch.setattr("traffic_flow.pipeline.simulate_scenario", simulate)
+    params = default_metanet_params(segments)
+    # Make baseline choices observable: modeled admission cannot meet demand,
+    # and a 150 km/h cap is not equivalent to unrestricted free-flow speed.
+    params["q_capacity"] = np.full(segments, 300.)
+    params["v_free"] = np.array([170., 120., 110.])
+    params["r"] = np.array([0., 150., 0.])
+    params["beta"] = np.array([0., 0.05, 0.1])
+    if request.param:
+        params = {key: np.tile(value.astype(float), (n, 1)) for key, value in params.items()}
+        params["v_free"] *= np.linspace(1., 0.9, n)[:, None]
+        params["r"] *= np.linspace(0.8, 1.2, n)[:, None]
+    vsl = np.full((n, segments), 70.)
+    # Production calls must not alter observations, calibration or the saved policy.
+    for array in (*traffic, *params.values(), vsl):
+        array.flags.writeable = False
+    return Scenario(spec, traffic), params, vsl
 
-def test_virtual_trajectory_analysis_preserves_existing_values():
-    """Freeze the current positive-speed integration before moving its module."""
-    from traffic_flow.results.analysis import get_virtual_trajectory
 
-    speed = np.array([
-        [30., 60., 90., 30., 60., 90., 30., 60.],
-        [60., 90., 30., 60., 90., 30., 60., 90.],
-        [90., 30., 60., 90., 30., 60., 90., 30.],
-    ])
-    speed.flags.writeable = False
-    # Captured from trajectories.py before consolidation; preserve the repeated
-    # starting point and boundary behavior rather than changing the algorithm.
-    for direction, times, positions in (
-        (1, [2., 3., 3.25, 3.25, 4., 5.], [0., 1., 1.25, 1.25, 2., 2.5]),
-        (-1, [2., 2.5, 3., 3.25, 3.25, 3.5, 4., 4.5],
-         [2.5, 2., 1.5, 1.25, 1.25, 1., 0.5, 0.]),
-    ):
-        actual = get_virtual_trajectory(speed, 3.25, 1.25, 30., 0.5, direction=direction)
-        np.testing.assert_allclose(actual, (times, positions), rtol=RTOL, atol=ATOL)
+def main_replay(reference, scenario, params, vsl, *, real_data, until_ff):
+    from traffic_flow.types import SimulationResult
+
+    spec, traffic = scenario.spec, scenario.traffic
+    result = reference.run_metanet_sim(
+        T=spec.time_step, l=spec.L,
+        init_traffic_state=(traffic.initial_density.copy(), traffic.initial_velocity.copy(),
+                            float(traffic.inflow[0]), 0.),
+        demand=traffic.inflow.copy(), downstream_density=traffic.downstream_density.copy(),
+        params=deepcopy(params), lanes=dict(enumerate(traffic.lanes)),
+        vsl_speeds=None if vsl is None else vsl.copy(),
+        plotting=True, real_data=real_data, until_ff=until_ff,
+    )
+    # The agreed convention differs from main ONLY by terminal road occupancy.
+    # Never subtract terminal queue or loosen tolerances to obtain parity.
+    terminal = spec.time_step * spec.L * (result[0][-1] @ traffic.lanes)
+    return SimulationResult(*result[:3], float(result[3] - terminal))
+
+
+def assert_simulation_close(actual, expected):
+    for name, new, old in zip(actual._fields, actual, expected):
+        assert np.shape(new) == np.shape(old), name
+        assert np.isfinite(new).all() and np.isfinite(old).all(), name
+        np.testing.assert_allclose(new, old, rtol=RTOL, atol=ATOL, equal_nan=False,
+                                   err_msg=name)
+
+
+def test_simulation_matches_latest_main_with_agreed_ttt(latest_main, drain_case):
+    scenario, params, vsl = drain_case
+    for real_data, controls in ((True, None), (False, vsl)):
+        for until_ff in (False, True):
+            expected = main_replay(latest_main, scenario, params, controls,
+                                   real_data=real_data, until_ff=until_ff)
+            actual = simulate(scenario, params, controls, real_data=real_data, until_ff=until_ff)
+            assert_simulation_close(actual, expected)
+            if until_ff:
+                # Catch ignored flags, a missing early stop, and untrimmed allocation.
+                assert scenario.spec.time_steps + 1 < len(actual.density) < 11 * scenario.spec.time_steps + 1
+
+
+@pytest.fixture(scope="module")
+def drained_run(latest_main, drain_case):
+    from traffic_flow.config import MPCConfig
+    from traffic_flow.types import OptimizationResult, RunResult
+
+    scenario, params, vsl = drain_case
+    baseline = main_replay(latest_main, scenario, params, None, real_data=True, until_ff=True)
+    controlled = main_replay(latest_main, scenario, params, vsl, real_data=False, until_ff=True)
+    return RunResult(scenario, params, MPCConfig(pred_horizon=10, control_horizon=2),
+                     OptimizationResult(vsl, baseline, controlled))
+
+
+def test_evaluate_uses_main_baseline_and_drains_both_runs(drained_run):
+    from traffic_flow.pipeline import evaluate
+
+    run = drained_run
+    actual = evaluate(run.scenario, run.params, run.optimization.vsl, until_ff=True)
+    np.testing.assert_array_equal(actual.vsl, run.optimization.vsl)
+    for phase in ("baseline", "controlled"):
+        assert_simulation_close(getattr(actual, phase), getattr(run.optimization, phase))
+
+
+def test_drained_report_matches_main_with_agreed_ttt(latest_main, drained_run):
+    from traffic_flow.results.analysis import run_analysis
+
+    run = drained_run
+    spec, traffic = run.scenario.spec, run.scenario.traffic
+    baseline, controlled = run.optimization.baseline, run.optimization.controlled
+    rho, velocity = baseline.density[:-1], baseline.velocity[:-1]
+    # Main's metric accepts aligned beta; use its own extension for dynamic inputs.
+    extended = latest_main._extend_params_for_drain(
+        run.params, spec.time_steps, len(rho), spec.num_segments,
+    )
+    ff = latest_main.ff_tts_vkm(rho, velocity, traffic.lanes, spec.time_step, spec.L, run.params["v_free"])
+    served = latest_main.vehicles_served(rho, velocity, traffic.lanes, extended["beta"], spec.time_step)
+    gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes)
+    window_tt = spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ traffic.lanes)
+    sim_tt, opt_tt = baseline.total_travel_time, controlled.total_travel_time
+    expected = {
+        "gt_tt": gt_tt, "sim_tt": sim_tt, "opt_tt": opt_tt, "ff_tt": ff, "num_veh": served,
+        "sim_error": np.mean(np.abs((traffic.velocity - velocity[:spec.time_steps]) / traffic.velocity)) * 100,
+        "tts_error": abs(gt_tt - window_tt) / gt_tt * 100,
+        "cc": np.clip((sim_tt - opt_tt) / (sim_tt - ff) * 100, 0, 100),
+        "avg_tt_reduced_per_veh": (sim_tt - opt_tt) / served * 60,
+        "uncontrolled_avg_tts": (sim_tt - ff) / served * 60,
+        "controlled_avg_tts": (opt_tt - ff) / served * 60,
+    }
+    actual = run_analysis(run)
+    for name, value in expected.items():
+        np.testing.assert_allclose(getattr(actual, name), value, rtol=RTOL, atol=ATOL,
+                                   equal_nan=False, err_msg=name)

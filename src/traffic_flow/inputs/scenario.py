@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from ..config import CalRef, ScenarioConfig
-from ..model.parameters import load_calibrated_params
+from ..model.parameters import load_metanet_params
 from ..paths import REPO_DIR
 from ..types import MetanetParams, TrafficData, space_vec, time_space, NamedTuple
 
@@ -62,22 +62,22 @@ def prepare_traffic_data(raw_density: time_space, raw_flow: time_space, lanes: s
                      density[initial_step].copy(), velocity[initial_step].copy())
 
 def load_scenario(dataset: str, date: str) -> Scenario:
-    try: meta = _DATASETS[dataset]
-    except KeyError: raise ValueError(f"Unknown dataset. Available: {', '.join(_DATASETS)}") from None
-    directory = REPO_DIR / "data" / dataset / f"{dataset}_{date}"
-    density: time_space = np.load(directory / "rho_hat.npy", allow_pickle=False)
-    flow: time_space = np.load(directory / "q_hat.npy", allow_pickle=False)
-    lanes: space_vec = np.load(directory / "lane_mapping.npy", allow_pickle=False)
-    assert density.ndim == 2 and lanes.ndim == 1 and lanes.size == density.shape[1], "Incompatible shapes for density or lane mapping"
-    traffic = prepare_traffic_data(density, flow, lanes[1:-1], smoothing_window=2)
-    time_steps, num_segments = traffic.density.shape
-    spec = ScenarioConfig(dataset, date, meta.segment_km, num_segments, meta.step_seconds / 3600, time_steps)
-    return Scenario(spec, traffic)
-
+  try: meta = _DATASETS[dataset]
+  except KeyError: raise ValueError(f"Unknown dataset. Available: {', '.join(_DATASETS)}") from None
+  directory = REPO_DIR / "data" / dataset / f"{dataset}_{date}"
+  density: time_space = np.load(directory / "rho_hat.npy", allow_pickle=False)
+  flow: time_space = np.load(directory / "q_hat.npy", allow_pickle=False)
+  lanes: space_vec = np.load(directory / "lane_mapping.npy", allow_pickle=False)
+  assert density.ndim == 2 and lanes.ndim == 1 and lanes.size == density.shape[1], "Incompatible shapes for density or lane mapping"
+  traffic = prepare_traffic_data(density, flow, lanes[1:-1], smoothing_window=2)
+  time_steps, num_segments = traffic.density.shape
+  spec = ScenarioConfig(dataset, date, meta.segment_km, num_segments, meta.step_seconds / 3600, time_steps)
+  return Scenario(spec, traffic)
 
 def load_params(scenario: Scenario, calibration: CalRef) -> MetanetParams:
-    spec = scenario.spec
-    return load_calibrated_params(
-        REPO_DIR / "data" / spec.freeway / f"{spec.freeway}_{spec.date}" / calibration.source, 
-        interval=calibration.interval, num_timesteps=spec.time_steps, num_segments=spec.num_segments,
-    )
+  spec = scenario.spec
+  directory = REPO_DIR / "data" / spec.freeway / f"{spec.freeway}_{spec.date}" / calibration.source
+  return load_metanet_params(path=directory, control_h=calibration.interval,
+    num_timesteps=spec.time_steps, num_segments=spec.num_segments)
+
+

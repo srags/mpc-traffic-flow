@@ -6,17 +6,25 @@ from traffic_flow.console import announce_file
 
 announce_file(Path(__file__))
 
+import io
+import tokenize
+
+def code_size(source: str) -> int:
+    comments = sum(len(token.string)
+            for token in tokenize.generate_tokens(io.StringIO(source).readline)
+            if token.type == tokenize.COMMENT)
+    return len(source) - comments
+
 def git(*args): return subprocess.check_output(["git", *args]).decode("utf-8")
 
 def paths(*args): return set(git(*args).split("\0")) - {""}
 
-def count(files, read):
+def count(files: set[str], read):
     src = experiments = notebooks = python = 0
     for path in sorted(files):
-        if path.startswith("tests/"):
-            continue
+        if path.startswith("tests/"): continue
         if path.endswith(".py"):
-            size = len(read(path))
+            size = code_size(read(path))
             python += size
             if path.startswith("src/"):
                 src += size
@@ -25,7 +33,7 @@ def count(files, read):
         elif path.endswith(".ipynb"):
             notebook = json.loads(read(path))
             notebooks += sum(
-                len("".join(cell.get("source", [])))
+                code_size("".join(cell.get("source", [])))
                 for cell in notebook["cells"]
                 if cell["cell_type"] == "code"
             )
@@ -41,13 +49,8 @@ local_files = {p for p in local_files - ignored if Path(p).is_file()}
 main = count(main_files, lambda p: git("show", f"{ref}:{p}"))
 local = count(local_files, lambda p: Path(p).read_bytes().decode("utf-8"))
 
-labels = [
-    "src/ Python",
-    "experiments/ Python",
-    "Notebook code cells",
-    "All .py files",
-    "All Python + notebooks",
-]
+labels = ["src/ Python", "experiments/ Python", "Notebook code cells",
+    "All .py files", "All Python + notebooks"]
 
 print(f"GitHub main: {ref[:7]}")
 print(tabulate(headers=["Scope", "Main", "Local", "Reduction"], tablefmt="outline", tabular_data=[

@@ -1,8 +1,6 @@
 from pathlib import Path
 from typing import cast
-
 import numpy as np
-
 from ..types import MetanetParams
 
 def param_slice(params: MetanetParams, start_time_step, end_time_step, desired_length=None) -> MetanetParams:
@@ -23,24 +21,6 @@ def default_metanet_params(num_segments: int) -> MetanetParams:
         "a": 1.4, "q_capacity": 2400, "r": 0, "beta": 0, "gamma": 1,
     }
     return cast(MetanetParams, {key: np.full(num_segments, value) for key, value in defaults.items()})
-
-def load_calibrated_params(directory: Path, interval: int | None, num_timesteps: int, num_segments: int) -> MetanetParams:
-    """Read a saved calibration, detecting static files or interval blocks.
-
-    directory is the calibration-source folder, before any control_h_* suffix.
-    An interval folder can also contain a single static parameter block.
-    """
-    parameter_dir = directory / f"control_h_{interval}" if interval else directory
-    blocks = [path for path in parameter_dir.iterdir() if path.is_dir() and path.name.startswith("params_")]
-    if blocks:
-        print(f"Dynamic parameters detected: {len(blocks)} subfolder(s) found")
-        return load_metanet_params(
-            path=directory, control_h=interval,
-            num_timesteps=num_timesteps, num_segments=num_segments,
-        )
-
-    print("No dynamic parameter subfolders found — using static calibration parameters")
-    return load_metanet_params(path=parameter_dir, num_timesteps=num_timesteps, num_segments=num_segments)
 
 def _load_parameter_block(path: Path, num_segments: int) -> MetanetParams:
     defaults = default_metanet_params(num_segments)

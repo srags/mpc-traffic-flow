@@ -7,13 +7,10 @@ REPO_DIR = Path(os.path.abspath(__file__)).parents[2]
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 def ensure_dir(path: Path):
-  """Create ``path`` if missing and return it, so it can be used inline."""
-  os.makedirs(path, exist_ok=True)
+  path.mkdir(parents=True, exist_ok=True)
   return path
 
-def cut_repo(path: Path):
-  """Cut the path to the repository root."""
-  return path.relative_to(REPO_DIR)
+def cut_repo(path: Path): return path.relative_to(REPO_DIR)
 
 def collection_dir(dataset: str, date: str, calibration: CalRef, study: StudyChoice = None) -> Path:
   directory = REPO_DIR / "results" / dataset / f"{dataset}_{date}" / calibration.source
