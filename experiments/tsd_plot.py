@@ -20,9 +20,9 @@ sys.path.insert(0, str(REPO_DIR / "src"))
 
 import numpy as np
 from tabulate import tabulate
-from traffic_flow import load_one_result, load_scenario, CalRef, CalSource
+from traffic_flow import load_one_result, load_scenario, CalRef, CalSource, LATEST_UPDATE
 
-from traffic_flow.console import announce_save, announce_file
+from traffic_flow.console import print_save, print_file
 from traffic_flow.results.plots import Plotter
 from traffic_flow.results.analysis import format_date_label, run_analysis
 from traffic_flow.pipeline import replay
@@ -33,7 +33,7 @@ DATES = ["11_28", "11_29", "11_30", "12_01", "12_02"]
 
 
 if __name__ == "__main__":
-  announce_file(Path(__file__))
+  print_file(Path(__file__))
   scenario = load_scenario("i24", DATES[0])
   CONTROL_ZONE_START_KM = 2 * scenario.spec.L
   corridor_km = scenario.spec.num_segments * scenario.spec.L
@@ -48,7 +48,7 @@ if __name__ == "__main__":
   table = []
   for row, date in enumerate(DATES):
     run = load_one_result("i24", date, calibration=CalRef(CalSource.FIXED_RAMPS, interval=None), study=None)
-    run = replay(run, until_ff=True)
+    run = replay(run, until_ff=LATEST_UPDATE)
     n_time = len(run.scenario.traffic.velocity)
     stats = run_analysis(run)
     table.append([format_date_label(date), f"{stats.sim_tt:.2f}", f"{stats.sim_tt-stats.ff_tt:.2f}", f"{stats.cc:.2f}"])
@@ -76,4 +76,4 @@ if __name__ == "__main__":
   cbar.set_label("Velocity (km/hr)")
 
   p.savefig(REPO_DIR / "figs" / "tsd_plot" / "tsd.png", dpi=300, bbox_inches="tight", pad_inches=0.1)
-  announce_save(REPO_DIR / "figs" / "tsd_plot" / "tsd.png")
+  print_save(REPO_DIR / "figs" / "tsd_plot" / "tsd.png")

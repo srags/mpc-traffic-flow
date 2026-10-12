@@ -155,12 +155,14 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
 
 
 @pytest.mark.parametrize("method,until_ff", [
+    pytest.param("run", False, id="streaming"),
+    pytest.param("run", True, id="streaming-drained"),
     pytest.param("run_with_history", False, id="fixed-horizon"),
     pytest.param("run_with_history", True, id="drained"),
     pytest.param("run_with_opt", False, id="optimization-history"),
     pytest.param("run_with_opt", True, id="optimization-history-drained"),
 ])
-def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method, until_ff):
+def test_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method, until_ff):
     """Pin the new accounting with a nonzero terminal queue and unequal lanes."""
     from unittest.mock import Mock
 
@@ -185,13 +187,17 @@ def test_history_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch,
     result = getattr(simulator, method)(
         np.full(steps, 100.), np.zeros(steps), states[0],
     )
-    density, velocity, queue = result[:3]
     ttt = result[-1]
 
     assert step.call_count == 2
-    np.testing.assert_array_equal(density, [[10, 20], [30, 40], terminal_density])
-    np.testing.assert_array_equal(velocity, np.full((3, 2), 90.))
-    np.testing.assert_array_equal(queue, [[1], [2], [7]])
+    if method == "run":
+        for actual, expected in zip(result[0], states[-1]):
+            np.testing.assert_array_equal(actual, expected)
+    else:
+        density, velocity, queue = result[:3]
+        np.testing.assert_array_equal(density, [[10, 20], [30, 40], terminal_density])
+        np.testing.assert_array_equal(velocity, np.full((3, 2), 90.))
+        np.testing.assert_array_equal(queue, [[1], [2], [7]])
     # 0.1 * (0.5 * (10*2 + 20*3 + 30*2 + 40*3) + 1 + 2 + 7)
     np.testing.assert_allclose(ttt, 14., rtol=RTOL, atol=ATOL)
 
@@ -204,7 +210,7 @@ def test_synthetic_reports_preserve_original_replay():
     from traffic_flow.results.synthetic import SyntheticResult, load_synthetic_results
     from traffic_flow.types import MetanetState
 
-    policy_dir = ROOT / "results_bu/synthetic_10km/demand"
+    policy_dir = ROOT / "results/synthetic_10km/demand"
     peaks = (5500, 6250)
     paths = [policy_dir / f"demand{float(peak)}_duration0.5.csv" for peak in peaks]
     if not all(path.is_file() for path in paths):
@@ -380,19 +386,36 @@ def test_evaluate_uses_main_baseline_and_drains_both_runs(drained_run):
         assert_simulation_close(getattr(actual, phase), getattr(run.optimization, phase))
 
 
-def test_drained_report_matches_main_with_agreed_ttt(latest_main, drained_run):
-    from traffic_flow.results.analysis import run_analysis
+@pytest.mark.parametrize("latest_update", [False, True], ids=["legacy", "vehicle-km"])
+def test_report_modes_match_main_with_agreed_ttt(monkeypatch, latest_main, drain_case, latest_update):
+    from traffic_flow.config import MPCConfig
+    from traffic_flow.types import OptimizationResult, RunResult
+    from traffic_flow.results import analysis
 
-    run = drained_run
+    # Exercise both conventions regardless of the developer's current global switch.
+    # Histories and expected metrics come from the reference, not the tested helper.
+    monkeypatch.setattr(analysis, "LATEST_UPDATE", latest_update)
+    scenario, params, vsl = drain_case
+    baseline = main_replay(latest_main, scenario, params, None, real_data=True, until_ff=latest_update)
+    controlled = main_replay(latest_main, scenario, params, vsl, real_data=False, until_ff=latest_update)
+    run = RunResult(scenario, params, MPCConfig(pred_horizon=10, control_horizon=2),
+                    OptimizationResult(vsl, baseline, controlled))
     spec, traffic = run.scenario.spec, run.scenario.traffic
     baseline, controlled = run.optimization.baseline, run.optimization.controlled
     rho, velocity = baseline.density[:-1], baseline.velocity[:-1]
-    # Main's metric accepts aligned beta; use its own extension for dynamic inputs.
-    extended = latest_main._extend_params_for_drain(
-        run.params, spec.time_steps, len(rho), spec.num_segments,
-    )
-    ff = latest_main.ff_tts_vkm(rho, velocity, traffic.lanes, spec.time_step, spec.L, run.params["v_free"])
-    served = latest_main.vehicles_served(rho, velocity, traffic.lanes, extended["beta"], spec.time_step)
+    if latest_update:
+        # Main's metric accepts aligned beta; use its own extension for dynamic inputs.
+        extended = latest_main._extend_params_for_drain(
+            run.params, spec.time_steps, len(rho), spec.num_segments,
+        )
+        ff = latest_main.ff_tts_vkm(rho, velocity, traffic.lanes, spec.time_step, spec.L, run.params["v_free"])
+        served = latest_main.vehicles_served(rho, velocity, traffic.lanes, extended["beta"], spec.time_step)
+    else:
+        served = float(traffic.inflow.sum()) * spec.time_step
+        free_speed = run.params["v_free"]
+        if free_speed.ndim == 2:
+            free_speed = free_speed.max(axis=0)
+        ff = served * sum(spec.L / speed for speed in free_speed)
     gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes)
     window_tt = spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ traffic.lanes)
     sim_tt, opt_tt = baseline.total_travel_time, controlled.total_travel_time
@@ -405,7 +428,7 @@ def test_drained_report_matches_main_with_agreed_ttt(latest_main, drained_run):
         "uncontrolled_avg_tts": (sim_tt - ff) / served * 60,
         "controlled_avg_tts": (opt_tt - ff) / served * 60,
     }
-    actual = run_analysis(run)
+    actual = analysis.run_analysis(run)
     for name, value in expected.items():
         np.testing.assert_allclose(getattr(actual, name), value, rtol=RTOL, atol=ATOL,
                                    equal_nan=False, err_msg=name)

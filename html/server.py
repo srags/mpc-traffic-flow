@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Serve the local viewer from saved run bundles; no simulations or data reads."""
+"""View saved runs, with optional in-memory drainage replay; never run MPC or write results."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import argparse
 import json
 import sys
 import webbrowser
+import warnings
 from dataclasses import fields
 from functools import lru_cache
 from http import HTTPStatus
@@ -24,7 +25,9 @@ RESULTS_ROOT = (REPO_ROOT / "results").resolve()
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from traffic_flow.results.io import load_npz  # noqa: E402
-from traffic_flow.results.analysis import get_ff_tts  # noqa: E402
+from traffic_flow.results.analysis import run_analysis  # noqa: E402
+from traffic_flow.pipeline import replay  # noqa: E402
+from traffic_flow.config import Study  # noqa: E402
 from traffic_flow.types import RunResult  # noqa: E402
 
 # Wall-clock origin is not saved in the bundle. Other datasets use elapsed time.
@@ -40,13 +43,24 @@ def _safe_scenario_path(scenario_id: str) -> Path:
     return path
 
 
-def _scenario_summary(run: RunResult, relative: Path) -> dict[str, str]:
+def _scenario_summary(run: RunResult, relative: Path) -> dict[str, object]:
     spec, config = run.scenario.spec, run.config
-    # The file supplies geometry/settings; folders are only display labels.
-    parts = relative.parts
-    context = "/".join(parts[2:-1]) or "saved run"
+    # Calibration/study identity is encoded by collection_dir, not in the NPZ
+    # schema. Read these labels from folders, but all parameter values from the
+    # saved config (a filename such as slb_95 is not authoritative).
+    collection = list(relative.parts[2:-1])
+    context = "/".join(collection) or "saved run"
+    study = collection.pop() if collection and collection[-1] in {item.value for item in Study} else ""
+    interval = None
+    if collection and collection[-1].startswith("control_h_"):
+        suffix = collection[-1].removeprefix("control_h_")
+        if suffix.isdigit():
+            interval = int(suffix)
+            collection.pop()
+    calibration_source = "/".join(collection) or "saved run"
     run_id = relative.stem
-    options = [f"min {config.speed_lb:g}", f"hold {config.hold_length}"]
+    options = [f"min {config.speed_lb:g}", f"hold {config.hold_length}",
+               f"predict {config.pred_horizon}", f"apply {config.control_horizon}"]
     if config.safety_temporal is not None:
         options.append(f"temporal {config.safety_temporal:g}")
     if config.safety_spatial is not None:
@@ -67,6 +81,16 @@ def _scenario_summary(run: RunResult, relative: Path) -> dict[str, str]:
         "calibration": context,
         "variant": variant,
         "network": network,
+        "dataset": spec.freeway,
+        "dateKey": spec.date,
+        "calibrationSource": calibration_source,
+        "calibrationInterval": interval,
+        "study": study,
+        "run": run_id,
+        "parameters": {name: getattr(config, name) for name in (
+            "hold_length", "speed_lb", "safety_temporal", "safety_spatial",
+            "pred_horizon", "control_horizon",
+        )},
     }
 
 
@@ -74,12 +98,14 @@ def _delay_curve(run: RunResult) -> dict[str, object]:
     """TTT of the displayed mix minus one fixed free-flow TTT.
 
     Use full-precision saved states and preserve the saved TTT convention.
-    Any terminal contribution switches with the final displayed interval, so
-    cutoff 0/T matches the saved baseline/controlled total minus free flow. This is
-    an accounting of the mixed display, not a new partial-policy simulation.
+    Each trajectory's terminal contribution belongs to its own final interval;
+    intervals after that trajectory ends contribute zero. This aligns unequal
+    drainage lengths without inventing travel time. The curve describes the
+    mixed display, not a new partial-policy simulation.
     """
     spec, traffic = run.scenario.spec, run.scenario.traffic
     baseline, controlled = run.optimization.baseline, run.optimization.controlled
+    steps = max(len(baseline.density), len(controlled.density)) - 1
     costs = []
     for simulation in (baseline, controlled):
         road_cost = spec.time_step * spec.L * (simulation.density @ traffic.lanes)
@@ -90,11 +116,11 @@ def _delay_curve(run: RunResult) -> dict[str, object]:
             cost[-1] -= road_cost[-1]
         if not np.isclose(cost.sum(), simulation.total_travel_time, rtol=1e-9, atol=1e-8):
             raise ValueError("Saved travel time disagrees with the saved density/queue histories")
-        costs.append(cost)
+        intervals = cost[:-1].copy()
+        intervals[-1] += cost[-1]
+        costs.append(np.pad(intervals, (0, steps - len(intervals))))
     difference = costs[1] - costs[0]
-    increments = difference[:-1].copy()
-    increments[-1] += difference[-1]
-    curve = baseline.total_travel_time + np.r_[0.0, np.cumsum(increments)]
+    curve = baseline.total_travel_time + np.r_[0.0, np.cumsum(difference)]
     curve[-1] = controlled.total_travel_time  # Remove floating-point summation drift only.
     # Match the current Python reports, including their dynamic-speed convention.
     v_free = np.asarray(run.params["v_free"])
@@ -102,7 +128,7 @@ def _delay_curve(run: RunResult) -> dict[str, object]:
         v_free = v_free.max(axis=0)
     if v_free.shape != (spec.num_segments,) or not np.isfinite(v_free).all() or np.any(v_free <= 0):
         raise ValueError("Saved free-flow speeds must be positive and finite, one per segment")
-    free_flow = float(get_ff_tts(traffic.inflow, spec.time_step, spec.L, v_free))
+    free_flow = float(run_analysis(run).ff_tt)
     if not np.isfinite(free_flow):
         raise ValueError("Saved inputs produce a non-finite free-flow travel time")
     return {
@@ -113,42 +139,62 @@ def _delay_curve(run: RunResult) -> dict[str, object]:
     }
 
 
-def load_scenario(scenario_id: str) -> dict[str, object]:
+def load_scenario(scenario_id: str, *, drain: bool = False) -> dict[str, object]:
     path = _safe_scenario_path(scenario_id)
     stamp = path.stat()
-    return _load_scenario(scenario_id, stamp.st_mtime_ns, stamp.st_size, stamp.st_ino)
+    return _load_scenario(scenario_id, stamp.st_mtime_ns, stamp.st_size, stamp.st_ino, drain)
 
 
 @lru_cache(maxsize=12)
-def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) -> dict[str, object]:
+def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int,
+                   drain: bool = False) -> dict[str, object]:
     # Fingerprinting invalidates cached data when save_result replaces a bundle.
     path = _safe_scenario_path(scenario_id)
     run = load_npz(path)
+    notices = []
+    if drain:
+        # Reuse the simulator with this bundle's inputs and raw policy. There is
+        # no optimizer, data-folder lookup, or save_result call on this path.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            run = replay(run, until_ff=True)
+        notices = list(dict.fromkeys(str(warning.message) for warning in caught))
     spec, traffic = run.scenario.spec, run.scenario.traffic
     result = run.optimization
-    steps, segments = spec.time_steps, spec.num_segments
-    if steps < 1 or segments < 1 or not all(
+    observed_steps, segments = spec.time_steps, spec.num_segments
+    if observed_steps < 1 or segments < 1 or not all(
         np.isfinite(value) and value > 0 for value in (spec.time_step, spec.L)
     ) or not np.isfinite(spec.start_time):
         raise ValueError("Invalid scenario geometry or timing")
     if traffic.lanes.shape != (segments,) or not np.isfinite(traffic.lanes).all() or np.any(traffic.lanes <= 0):
         raise ValueError("Invalid saved lane counts")
-    if result.vsl.shape != (steps, segments) or not np.isfinite(result.vsl).all():
+    if result.vsl.shape != (observed_steps, segments) or not np.isfinite(result.vsl).all():
         raise ValueError("Saved VSL dimensions/values do not match the scenario")
 
     for simulation in (result.baseline, result.controlled):
-        if simulation.density.shape != (steps + 1, segments) or simulation.velocity.shape != (steps + 1, segments):
-            raise ValueError("Saved histories must include one terminal row")
-        if simulation.queue.shape not in ((steps + 1,), (steps + 1, 1)):
+        rows = len(simulation.density)
+        if rows < observed_steps + 1 or simulation.density.shape != (rows, segments) or simulation.velocity.shape != (rows, segments):
+            raise ValueError("Saved histories must cover the observation window and include a terminal row")
+        if simulation.queue.shape not in ((rows,), (rows, 1)):
             raise ValueError("Saved queue dimensions do not match the scenario")
         if not all(np.isfinite(value).all() for value in simulation):
             raise ValueError("Saved results contain non-finite values")
 
+    baseline_steps = len(result.baseline.density) - 1
+    controlled_steps = len(result.controlled.density) - 1
+    steps = max(baseline_steps, controlled_steps)
+
     def display(simulation):
+        def aligned(array):
+            # Only for transport/display: the frontend masks intervals beyond
+            # each recorded history. The cost curve never charges padded states.
+            tail = np.repeat(array[-1:], steps - len(array) + 1, axis=0)
+            return np.round(np.concatenate((array[:-1], tail)), 3).tolist()
+
         return {
-            "velocity": np.round(simulation.velocity[:-1], 3).tolist(),
-            "density": np.round(simulation.density[:-1], 3).tolist(),
-            "queue": np.round(simulation.queue.reshape(-1)[:-1], 3).tolist(),
+            "velocity": aligned(simulation.velocity),
+            "density": aligned(simulation.density),
+            "queue": aligned(simulation.queue.reshape(-1)),
         }
 
     config = {field.name: getattr(run.config, field.name)
@@ -164,12 +210,18 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) ->
     return {
         "scenario": _scenario_summary(run, path.relative_to(RESULTS_ROOT)),
         **display(result.controlled),
-        "vsl": np.round(result.vsl, 3).tolist(),
+        "vsl": np.round(result.vsl, 3).tolist() + [None] * (steps - observed_steps),
         "baseline": display(result.baseline),
         "delay": _delay_curve(run),
         "config": config,
         "metadata": {
             "timeSteps": steps,
+            "observedSteps": observed_steps,
+            "baselineSteps": baseline_steps,
+            "controlledSteps": controlled_steps,
+            "drainageRequested": drain,
+            "hasDrainage": steps > observed_steps,
+            "warnings": notices,
             "timeStepSeconds": spec.time_step * 3600,
             "segments": segments,
             "segmentLengthKm": spec.L,
@@ -180,7 +232,7 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int) ->
     }
 
 
-def discover_scenarios() -> list[dict[str, str]]:
+def discover_scenarios() -> list[dict[str, object]]:
     scenarios = []
     for path in sorted(RESULTS_ROOT.rglob("*.npz")):
         if not path.is_file():
@@ -190,7 +242,7 @@ def discover_scenarios() -> list[dict[str, str]]:
             scenarios.append(payload["scenario"])
         except (ValueError, OSError, KeyError, TypeError, BadZipFile, EOFError) as error:
             print(f"[traffic-explorer] Skipping {path}: {error}")
-    return sorted(scenarios, key=lambda item: (item["date"], item["label"]))
+    return sorted(scenarios, key=lambda item: (str(item["date"]), str(item["label"])))
 
 
 class ScenarioHandler(SimpleHTTPRequestHandler):
@@ -231,11 +283,15 @@ class ScenarioHandler(SimpleHTTPRequestHandler):
                 self._json({"scenarios": discover_scenarios()})
                 return
             if parsed.path == "/api/scenario":
-                scenario_id = parse_qs(parsed.query).get("id", [""])[0]
+                query = parse_qs(parsed.query)
+                scenario_id = query.get("id", [""])[0]
                 if not scenario_id:
                     self._json({"error": "Missing scenario id"}, HTTPStatus.BAD_REQUEST)
                     return
-                self._json(load_scenario(scenario_id))
+                drain = query.get("drain", ["0"])[0]
+                if drain not in {"0", "1"}:
+                    raise ValueError("drain must be 0 or 1")
+                self._json(load_scenario(scenario_id, drain=drain == "1"))
                 return
             static_file = self.STATIC_FILES.get(parsed.path)
             if static_file:

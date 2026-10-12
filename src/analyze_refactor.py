@@ -2,9 +2,9 @@ import json
 import subprocess
 from pathlib import Path
 from tabulate import tabulate
-from traffic_flow.console import announce_file
+from traffic_flow.console import print_file
 
-announce_file(Path(__file__))
+print_file(Path(__file__))
 
 import io
 import tokenize

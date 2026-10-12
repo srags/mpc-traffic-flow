@@ -12,10 +12,19 @@
   <main class="page">
     <header class="topbar">
       <h1>Traffic viewer</h1>
-      <label class="scenario-picker" for="scenario-select">
-        <span>Scenario</span>
-        <select id="scenario-select" disabled><option>Finding scenarios…</option></select>
-      </label>
+      <label class="drainage-toggle"><input id="include-drainage" type="checkbox" disabled> Include drainage</label>
+      <div class="scenario-filters" aria-label="Saved run selection">
+        <label class="scenario-picker" for="dataset-select"><span>Dataset</span><select id="dataset-select" disabled></select></label>
+        <label class="scenario-picker" for="date-select"><span>Date</span><select id="date-select" disabled><option>Finding dates…</option></select></label>
+        <label class="scenario-picker calibration-picker" for="calibration-select"><span>Calibration</span><select id="calibration-select" disabled></select></label>
+        <label class="scenario-picker" for="interval-select" hidden><span>Calibration interval</span><select id="interval-select" disabled></select></label>
+        <label class="scenario-picker" for="study-select"><span>Study</span><select id="study-select" disabled></select></label>
+        <label class="scenario-picker" for="hold-select" hidden><span>Hold length</span><select id="hold-select" disabled></select></label>
+        <label class="scenario-picker" for="speed-select" hidden><span>Minimum VSL</span><select id="speed-select" disabled></select></label>
+        <label class="scenario-picker" for="temporal-select" hidden><span>Temporal limit</span><select id="temporal-select" disabled></select></label>
+        <label class="scenario-picker" for="spatial-select" hidden><span>Spatial limit</span><select id="spatial-select" disabled></select></label>
+        <label class="scenario-picker run-picker" for="scenario-select" hidden><span>Run</span><select id="scenario-select" disabled></select></label>
+      </div>
       <div class="scenario-meta" id="scenario-meta"></div>
     </header>
 
@@ -25,7 +34,7 @@
     </div>
 
     <div class="loading-panel" id="loading-panel" role="status">
-      <i></i><span>Loading traffic state…</span>
+      <i></i><span id="loading-message">Loading traffic state…</span>
     </div>
 
     <div id="visualization" hidden>
@@ -47,6 +56,7 @@
         </div>
 
         <div class="current-values" aria-label="Current network averages">
+          <span id="road-phase"></span>
           <span>Mean velocity <strong><span id="current-speed">—</span> km/h</strong></span>
           <span>Mean density <strong><span id="current-density">—</span> veh/km/lane</strong></span>
         </div>
@@ -72,7 +82,9 @@
         <span>Optimized history</span>
         <i aria-hidden="true"></i>
         <span>Baseline future</span>
+        <span id="ended-key" hidden><b></b> Gray: history ended</span>
       </div>
+      <p class="drainage-note" id="drainage-note" hidden></p>
 
       <section class="stats-grid" aria-label="Scenario summary">
         <article><span>Delay</span><strong id="delay">—</strong><small>veh-hr</small></article>

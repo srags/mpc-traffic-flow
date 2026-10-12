@@ -202,7 +202,7 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
 
 from pathlib import Path
 from .analysis import MPCStats
-from ..console import announce_save
+from ..console import print_save
 
 def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCStats, output_dir: Path, *, start_hour: float = 7.5):
     """Save optimal_vsl.png and controlled.png, preserving the cc_plot layout.
@@ -228,7 +228,7 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     p[0].invert_yaxis()
     p[0].grid()
     p.savefig(output_dir / "optimal_vsl.png")
-    announce_save(output_dir / "optimal_vsl.png")
+    print_save(output_dir / "optimal_vsl.png")
 
     n_time = traffic.velocity.shape[0]
     minutes = np.arange(n_time) * spec.time_step * 60
@@ -263,7 +263,7 @@ def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCSta
     p[3] = {'title': '% Decrease in Delay'}
 
     p.savefig(output_dir / "controlled.png")
-    announce_save(output_dir / "controlled.png")
+    print_save(output_dir / "controlled.png")
 
 
 def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
@@ -296,12 +296,8 @@ def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
     p[0].grid()
     p.show()
 
-
-
-from traffic_flow import evaluate
-
 def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16, batches: int = 4):
-  """Save the evaluate-based reveal using modeled inflow/queue and a 150 km/hr baseline."""
+  """Save a progressive reveal of the existing baseline and controlled trajectories."""
   import numpy as np
   from traffic_flow.results.plots import Plotter
 
@@ -310,6 +306,7 @@ def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16
   scenario, params = result.scenario, result.params
   spec = scenario.spec
   baseline = result.optimization.baseline.velocity[:spec.time_steps]
+  controlled = result.optimization.controlled.velocity[:spec.time_steps]
   # Keep the notebook's speed substitution to isolate the origin-mode change.
   optimal_vsl = np.where(result.optimization.vsl > params["v_free"], 150, result.optimization.vsl)
   free_vsl = np.full_like(optimal_vsl, 150)
@@ -324,9 +321,7 @@ def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16
     vsl = free_vsl.copy()
     vsl[:t] = optimal_vsl[:t]
     velocity = baseline.copy()
-    if t:
-      replay = evaluate(scenario, params, vsl)
-      velocity[:t] = replay.controlled.velocity[:t]
+    velocity[:t] = controlled[:t]
     batch, column = divmod(k, columns)
     for row, data, label, first, last in (
       (2 * batch, vsl, "VSL Speeds", "Free VSL Speeds", "Optimal VSL Speeds"),
@@ -342,4 +337,4 @@ def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16
   p.fig.tight_layout()
   output_dir.mkdir(parents=True, exist_ok=True)
   p.savefig(output_dir / "cc_reveal_evaluate.png", dpi=150)
-  announce_save(output_dir / "cc_reveal_evaluate.png")
+  print_save(output_dir / "cc_reveal_evaluate.png")

@@ -6,6 +6,8 @@ if TYPE_CHECKING:
   from .config import MPCConfig
   from .inputs.scenario import Scenario
 
+LATEST_UPDATE = False # SWITCH TO MATCH NEWEST MAIN
+
 hr = float
 km = float
 veh_hr = float
@@ -57,15 +59,17 @@ class SimulationResult(NamedTuple):
   velocity: time_space
   queue: time_space
   total_travel_time: veh_hr
+  @property
+  def flow_per_lane(self) -> time_space:
+    return self.density * self.velocity
 
 class OptimizationResult(NamedTuple):
   vsl: time_space
   baseline: SimulationResult
   controlled: SimulationResult
-
   @property
   def travel_time_saved(self) -> veh_hr:
-      return self.baseline.total_travel_time - self.controlled.total_travel_time
+    return self.baseline.total_travel_time - self.controlled.total_travel_time
 
 @dataclass(frozen=True)
 class RunResult:
@@ -84,26 +88,26 @@ from pyomo.core.base import (
 from typing_extensions import Self
 
 class IndexedVar(pyo_var.IndexedVar): 
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 class ScalarVar(pyo_var.ScalarVar):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 
 class FiniteScalarRangeSet(pyo_set.FiniteScalarRangeSet):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 
 class IndexedParam(pyo_param.IndexedParam):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 class ScalarParam(pyo_param.ScalarParam):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 
 class IndexedConstraint(pyo_cstr.IndexedConstraint):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 class ConstraintList(pyo_cstr.ConstraintList):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 
 class ScalarObjective(pyo_obj.ScalarObjective):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 class IndexedExpression(pyo_expr.IndexedExpression):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)
 class PyoModel(pyo.ConcreteModel):
-  def __new__(cls, *args, **kwargs) -> Self: return object.__new__(cls)
+  def __new__(cls, *_, **__) -> Self: return object.__new__(cls)

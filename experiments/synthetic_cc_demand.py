@@ -9,7 +9,7 @@ from traffic_flow.results.synthetic import load_synthetic_results, print_synthet
 
 CONFIG = SyntheticConfig()
 PEAKS = range(5100, 6501, 50)
-POLICY_DIR = REPO_DIR / "results_bu" / "synthetic_10km" / "demand"
+POLICY_DIR = REPO_DIR / "results" / "synthetic_10km" / "demand"
 FIGURE_DIR = REPO_DIR / "figs"
 
 def main() -> None:

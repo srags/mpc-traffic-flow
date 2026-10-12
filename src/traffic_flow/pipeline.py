@@ -2,6 +2,8 @@ from dataclasses import fields
 
 import numpy as np
 
+from traffic_flow.model.parameters import param_slice
+
 from .config import CalibrationConfig, MPCConfig
 
 from .inputs.scenario import Scenario
@@ -38,6 +40,9 @@ def simulate(
   """
   traffic = scenario.traffic
   steps = len(traffic.inflow) if steps is None else steps
+  assert isinstance(steps, int) and 1 <= steps <= min(len(traffic.inflow), len(traffic.downstream_density))
+  assert all(not isinstance(values, np.ndarray) or values.ndim == 1 or steps <= len(values) for values in params.values())
+  params = param_slice(params, 0, steps)
   if vsl is not None and vsl.shape != (steps, len(traffic.lanes)):
       raise ValueError(f"Unexpected VSL shape: {vsl.shape}")
   simulator = METANET_Simulator(

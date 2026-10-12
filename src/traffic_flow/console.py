@@ -1,4 +1,5 @@
 from pathlib import Path
+from tabulate import tabulate
 from .paths import cut_repo
 
 colors = {
@@ -20,14 +21,16 @@ def colored(text, *colors):
   for c in colors: text = colored_helper(text, c)
   return text
 
-def announce_save(file_path: Path):
+def print_save(file_path: Path):
   print(f"Saved to {colored(cut_repo(file_path), 'green', 'bold')}")
 
-def announce_title(text, color='yellow', bold=True):
+def print_title(text, color='yellow', bold=True):
   print(colored(f"<< {text} >>", color, 'bold' if bold else ''))
 
-def announce_file(file_path: Path):
+def print_file(file_path: Path):
   text = f"RUNNING: {cut_repo(file_path)}"
-  print(colored('='*len(text), 'cyan', 'bold'))
-  print(colored(text, 'cyan', 'bold'))
-  print(colored('='*len(text), 'cyan', 'bold'))
+  line = colored('='*len(text), 'cyan', 'bold')
+  print(line); print(colored(text, 'cyan', 'bold')); print(line)
+
+def print_table(data: list[list], headers: list = [], tablefmt="outline"):
+  print(tabulate(data, headers=headers, tablefmt=tablefmt))

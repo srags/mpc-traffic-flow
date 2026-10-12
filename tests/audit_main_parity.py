@@ -20,6 +20,7 @@ from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -232,7 +233,10 @@ def audit(phase):
                                      expected_b._replace(total_travel_time=raw_b),
                                      expected_c._replace(total_travel_time=raw_c), drain)
         try:
-            actual_metrics = run_analysis(run)
+            # --phase selects the report convention as well as the reference;
+            # do not let a developer's global switch silently mix the two.
+            with patch.object(current_report, "LATEST_UPDATE", drain):
+                actual_metrics = run_analysis(run)
             for name, expected in metrics.items():
                 check(group, "metric." + name, getattr(actual_metrics, name), expected, path)
             current = {name: float(getattr(actual_metrics, name)) for name in metrics}

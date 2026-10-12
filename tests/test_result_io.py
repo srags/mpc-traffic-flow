@@ -1,7 +1,9 @@
 """Persistence and viewer checks for explicit NPZ files."""
 
 import importlib.util
+import json
 import sys
+import warnings
 from copy import deepcopy
 from dataclasses import fields, replace
 from pathlib import Path
@@ -18,6 +20,7 @@ from traffic_flow.inputs.scenario import Scenario, prepare_traffic_data
 from traffic_flow.model.parameters import default_metanet_params
 from traffic_flow.types import OptimizationResult, RunResult, SimulationResult
 import traffic_flow.paths as paths
+import traffic_flow.results.analysis as analysis
 import traffic_flow.results.io as result_io
 
 
@@ -36,9 +39,9 @@ def run_result(tmp_path, monkeypatch):
     result = OptimizationResult(
         np.arange(12, dtype=float).reshape(6, 2) + 200.,
         SimulationResult(history + 30., history + 80., np.ones((7, 1)),
-                         spec.time_step * (spec.L * ((history + 30.) * traffic.lanes).sum() + 7.)),
+                         spec.time_step * (spec.L * ((history[:-1] + 30.) * traffic.lanes).sum() + 7.)),
         SimulationResult(history + 25., history + 85., np.zeros((7, 1)),
-                         spec.time_step * spec.L * ((history + 25.) * traffic.lanes).sum()),
+                         spec.time_step * spec.L * ((history[:-1] + 25.) * traffic.lanes).sum()),
     )
     config = MPCConfig(
         3, 2, control_zone=(1,), safety_temporal=0.7, safety_spatial=25,
@@ -161,13 +164,18 @@ def test_named_bundles_and_lookup_find_the_right_run(tmp_path, monkeypatch, run_
         )
 
 
-def test_viewer_discovers_named_npzs_and_passes_full_paths(tmp_path, monkeypatch, run_result):
+@pytest.fixture
+def viewer(tmp_path, monkeypatch):
     source = Path(__file__).resolve().parents[1] / "html/server.py"
     module_spec = importlib.util.spec_from_file_location("traffic_viewer_server", source)
     viewer = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(viewer)
-    root = tmp_path / "results"
-    monkeypatch.setattr(viewer, "RESULTS_ROOT", root)
+    monkeypatch.setattr(viewer, "RESULTS_ROOT", tmp_path / "results")
+    return viewer
+
+
+def test_viewer_discovers_named_npzs_and_passes_full_paths(tmp_path, monkeypatch, run_result, viewer):
+    root = viewer.RESULTS_ROOT
     calibration = CalRef("custom_fit", interval=3)
     first = save_result(run_result, calibration=calibration, study=Study.SAFETY_SWEEP)
     second = save_result(run_result, calibration=calibration, study=Study.SAFETY_SWEEP,
@@ -189,6 +197,18 @@ def test_viewer_discovers_named_npzs_and_passes_full_paths(tmp_path, monkeypatch
     }
     assert len({choice["label"] for choice in choices}) == 2
     assert all(choice["calibration"] == "custom_fit/control_h_3/safety_sweep" for choice in choices)
+    assert {choice["run"] for choice in choices} == {first.stem, second.stem}
+    for choice in choices:
+        assert choice["dataset"] == "test"
+        assert choice["dateKey"] == "day"
+        assert choice["calibrationSource"] == "custom_fit"
+        assert choice["calibrationInterval"] == 3
+        assert choice["study"] == "safety_sweep"
+        assert choice["parameters"] == {
+            "hold_length": 1, "speed_lb": 40.,
+            "safety_temporal": 0.7, "safety_spatial": 25,
+            "pred_horizon": 3, "control_horizon": 2,
+        }
     assert set(loaded) == {first, second, second.parent / "broken.npz"}
     payload = viewer.load_scenario(second.relative_to(root).as_posix())
     assert payload["scenario"]["label"].endswith(" · run2")
@@ -199,3 +219,148 @@ def test_viewer_discovers_named_npzs_and_passes_full_paths(tmp_path, monkeypatch
     for invalid in (str(second), "../outside.npz", "test/day/not-npz.txt"):
         with pytest.raises(ValueError, match="Invalid scenario path"):
             viewer.load_scenario(invalid)
+
+
+@pytest.mark.parametrize("dataset,date,source,interval,study", [
+    ("i24", "11_30", "calibration_static/fixed_ramping", None, ""),
+    ("i24", "11_29", "calibration_dynamic", 6, "hold_length"),
+    ("i24", "11_28", "calibration_static/time_varying_ramping", None, "speed_lb"),
+    ("test", "day", "custom/speed_lb/nested", 3, "safety_sweep"),
+])
+def test_viewer_summary_separates_filters_and_uses_saved_settings(
+    run_result, viewer, dataset, date, source, interval, study,
+):
+    spec = replace(run_result.scenario.spec, freeway=dataset, date=date)
+    config = replace(run_result.config, hold_length=5, speed_lb=57.,
+                     safety_temporal=None, safety_spatial=0.25,
+                     pred_horizon=17, control_horizon=4)
+    run = replace(run_result, scenario=replace(run_result.scenario, spec=spec), config=config)
+    context = Path(source)
+    if interval is not None:
+        context /= f"control_h_{interval}"
+    if study:
+        context /= study
+    # Filenames are run identities, not the source of the numerical settings.
+    relative = Path(dataset) / f"{dataset}_{date}" / context / "hold_999_temp_999_spat_999.npz"
+    summary = viewer._scenario_summary(run, relative)
+    assert summary["dataset"] == dataset
+    assert summary["dateKey"] == date
+    assert summary["date"] == date.replace("_", "/")
+    assert summary["calibrationSource"] == source
+    assert summary["calibrationInterval"] == interval
+    assert summary["study"] == study
+    assert summary["calibration"] == context.as_posix()
+    assert summary["run"] == relative.stem
+    assert summary["parameters"] == {
+        "hold_length": 5, "speed_lb": 57.,
+        "safety_temporal": None, "safety_spatial": 0.25,
+        "pred_horizon": 17, "control_horizon": 4,
+    }
+    json.dumps(summary, allow_nan=False)
+
+
+def extended_run(run, baseline_steps, controlled_steps, *, legacy=False):
+    """Tiny unequal histories with nonzero terminal costs to expose accounting errors."""
+    spec, traffic = run.scenario.spec, run.scenario.traffic
+    simulations = []
+    for steps, offset in ((baseline_steps, 30.), (controlled_steps, 25.)):
+        density = np.arange((steps + 1) * spec.num_segments, dtype=float).reshape(-1, spec.num_segments) + offset
+        velocity = density + 40.
+        queue = np.arange(steps + 1, dtype=float).reshape(-1, 1) + 1.
+        counted_density = density if legacy else density[:-1]
+        total = spec.time_step * (spec.L * (counted_density @ traffic.lanes).sum() + queue.sum())
+        simulations.append(SimulationResult(density, velocity, queue, float(total)))
+    return replace(run, optimization=OptimizationResult(run.optimization.vsl, *simulations))
+
+
+@pytest.mark.parametrize("baseline_steps,controlled_steps", [(8, 10), (10, 8)])
+@pytest.mark.parametrize("legacy", [False, True])
+def test_viewer_unequal_histories_preserve_costs_and_reporting(
+    tmp_path, monkeypatch, run_result, viewer, baseline_steps, controlled_steps, legacy,
+):
+    monkeypatch.setattr(analysis, "LATEST_UPDATE", not legacy)
+    run = extended_run(run_result, baseline_steps, controlled_steps, legacy=legacy)
+    original = deepcopy(run)
+    path = save_result(run, calibration=CalRef(), study=None)
+    # Inspect the same arrays after loading to catch accidental in-place padding.
+    monkeypatch.setattr(viewer, "load_npz", lambda path: run)
+    monkeypatch.setattr(viewer, "replay", lambda *args, **kwargs: pytest.fail("Saved drainage needs no replay"))
+    payload = viewer.load_scenario(path.relative_to(viewer.RESULTS_ROOT).as_posix())
+    steps = max(baseline_steps, controlled_steps)
+    observed = run.scenario.spec.time_steps
+    expected_metadata = {
+        "timeSteps": steps, "observedSteps": observed,
+        "baselineSteps": baseline_steps, "controlledSteps": controlled_steps,
+        "hasDrainage": True, "drainageRequested": False,
+    }
+    assert {key: payload["metadata"][key] for key in expected_metadata} == expected_metadata
+    assert payload["vsl"][:observed] == run.optimization.vsl.tolist()
+    assert payload["vsl"][observed:] == [None] * (steps - observed)
+    free_flow = analysis.run_analysis(run).ff_tt
+    assert payload["delay"]["freeFlow"] == pytest.approx(free_flow)
+
+    def elapsed(simulation, cutoff):
+        own_steps = len(simulation.density) - 1
+        used = min(cutoff, own_steps)
+        road = run.scenario.spec.L * (simulation.density[:used] @ run.scenario.traffic.lanes).sum()
+        queue = simulation.queue[:used].sum()
+        if cutoff >= own_steps:
+            queue += simulation.queue[-1].sum()
+            if legacy:
+                road += run.scenario.spec.L * (simulation.density[-1] @ run.scenario.traffic.lanes)
+        return run.scenario.spec.time_step * (road + queue)
+
+    baseline, controlled = run.optimization.baseline, run.optimization.controlled
+    expected = [baseline.total_travel_time - elapsed(baseline, cutoff)
+                + elapsed(controlled, cutoff) - free_flow for cutoff in range(steps + 1)]
+    np.testing.assert_allclose(payload["delay"]["byCutoff"], expected)
+    assert payload["delay"]["byCutoff"][0] == pytest.approx(baseline.total_travel_time - free_flow)
+    assert payload["delay"]["byCutoff"][-1] == pytest.approx(controlled.total_travel_time - free_flow)
+    for shown, simulation, before in (
+        (payload["baseline"], baseline, original.optimization.baseline),
+        (payload, controlled, original.optimization.controlled),
+    ):
+        own_steps = len(simulation.density) - 1
+        for name in ("velocity", "density", "queue"):
+            values = getattr(simulation, name)
+            displayed = np.asarray(shown[name])
+            assert displayed.shape == ((steps,) if name == "queue" else (steps, run.scenario.spec.num_segments))
+            expected_values = values.reshape(-1) if name == "queue" else values
+            np.testing.assert_allclose(displayed[:own_steps], expected_values[:-1])
+            if own_steps < steps:
+                np.testing.assert_allclose(displayed[own_steps:], np.broadcast_to(expected_values[-1], displayed[own_steps:].shape))
+            np.testing.assert_array_equal(values, getattr(before, name))
+    json.dumps(payload, allow_nan=False)
+
+
+def test_viewer_drainage_is_opt_in_cached_and_does_not_write(tmp_path, monkeypatch, run_result, viewer):
+    path = save_result(run_result, calibration=CalRef(), study=None)
+    before = path.read_bytes()
+    scenario_id = path.relative_to(viewer.RESULTS_ROOT).as_posix()
+    drained = extended_run(run_result, 8, 10)
+    calls = []
+
+    def replay(run, *, until_ff):
+        assert until_ff is True
+        np.testing.assert_array_equal(run.optimization.vsl, run_result.optimization.vsl)
+        calls.append(run)
+        warnings.warn("Drainage stopped at its step limit", RuntimeWarning)
+        return drained
+
+    monkeypatch.setattr(viewer, "replay", replay)
+    assert [choice["id"] for choice in viewer.discover_scenarios()] == [scenario_id]
+    saved = viewer.load_scenario(scenario_id)
+    assert calls == []
+    assert saved["metadata"]["timeSteps"] == run_result.scenario.spec.time_steps
+    assert saved["metadata"]["hasDrainage"] is False
+    assert saved["metadata"]["drainageRequested"] is False
+    expanded = viewer.load_scenario(scenario_id, drain=True)
+    assert expanded["metadata"]["timeSteps"] == 10
+    assert expanded["metadata"]["drainageRequested"] is True
+    assert expanded["metadata"]["hasDrainage"] is True
+    assert expanded["metadata"]["warnings"] == ["Drainage stopped at its step limit"]
+    assert viewer.load_scenario(scenario_id, drain=True) is expanded
+    assert viewer.load_scenario(scenario_id) is saved
+    assert len(calls) == 1
+    assert path.read_bytes() == before
+    assert list(path.parent.iterdir()) == [path]

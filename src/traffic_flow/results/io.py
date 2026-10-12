@@ -58,7 +58,7 @@ def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file
 
     temporary: Path | None = None
     try:
-        with NamedTemporaryFile(dir=output_dir, suffix=".npz", delete=False) as stream:
+        with NamedTemporaryFile(dir=output_dir, suffix=".tmp", delete=False) as stream:
             temporary = Path(stream.name)
             np.savez_compressed(stream, **arrays)
         temporary.replace(path)
@@ -152,5 +152,6 @@ def load_one_result(dataset: str, date: str, calibration: CalRef,
 ) -> RunResult:
     """Load a single saved run matching the requested configuration."""
     runs = load_results(dataset, date, calibration=calibration, study=study, where=where)
+    if len(runs) > 1: print(f"Loaded {len(runs)} results, returning the first.")
     return runs[0]
 

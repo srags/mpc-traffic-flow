@@ -20,6 +20,79 @@ const velocityColors = ["#d84a3a", "#efb949", "#a9c85f", "#38a877"];
 const densityColors = ["#38a877", "#b4ca55", "#efb949", "#d84a3a"];
 const FLOW_STEP = 31;
 const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const calibrationLabels = {
+  "calibration_static/fixed_ramping": "Static · fixed ramps",
+  "calibration_static/time_varying_ramping": "Static · varying ramps",
+  calibration_dynamic: "Dynamic",
+};
+const studyLabels = { "": "Standard", hold_length: "Hold length", speed_lb: "Minimum VSL", safety_sweep: "Safety limits" };
+const scenarioFilters = [
+  ["dataset", "dataset-select"],
+  ["dateKey", "date-select"],
+  ["calibrationSource", "calibration-select"],
+  ["calibrationInterval", "interval-select"],
+  ["study", "study-select"],
+  ["hold_length", "hold-select", "hold_length"],
+  ["speed_lb", "speed-select", "speed_lb"],
+  ["safety_temporal", "temporal-select", "safety_sweep"],
+  ["safety_spatial", "spatial-select", "safety_sweep"],
+];
+
+function filterLabel(key, value, scenario) {
+  if (key === "dataset") return scenario.network;
+  if (key === "dateKey") return scenario.date;
+  if (key === "calibrationSource") return calibrationLabels[value] ?? value;
+  if (key === "study") return studyLabels[value] ?? value;
+  if (value === "") return key === "calibrationInterval" ? "Not specified" : "No limit";
+  if (key === "safety_temporal") return `${value} km/h per step`;
+  return `${value} ${["hold_length", "calibrationInterval"].includes(key) ? "steps" : "km/h"}`;
+}
+
+function fillSelect(select, choices) {
+  const previous = select.value;
+  select.replaceChildren(...choices.map(([value, label]) => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label;
+    return option;
+  }));
+  select.value = choices.some(([value]) => value === previous) ? previous : choices[0][0];
+  select.disabled = false;
+}
+
+function refreshScenarioFilters() {
+  let matches = state.scenarios;
+  let study = "";
+  for (const [key, id, requiredStudy] of scenarioFilters) {
+    const select = $(`#${id}`);
+    const active = !requiredStudy || study === requiredStudy;
+    select.closest("label").hidden = !active
+      || (key === "dataset" && new Set(matches.map((run) => run.dataset)).size === 1)
+      || (key === "calibrationInterval" && matches.every((run) => run.calibrationInterval == null));
+    if (!active) {
+      select.replaceChildren();
+      select.disabled = true;
+      continue;
+    }
+    const valueOf = (run) => String((requiredStudy ? run.parameters[key] : run[key]) ?? "");
+    const choices = new Map(matches.map((run) => {
+      const value = valueOf(run);
+      return [value, filterLabel(key, value, run)];
+    }));
+    fillSelect(select, [...choices].sort(([a], [b]) =>
+      (requiredStudy || key === "calibrationInterval") && a !== "" && b !== ""
+        ? Number(a) - Number(b)
+        : a.localeCompare(b, undefined, { numeric: true })));
+    matches = matches.filter((run) => valueOf(run) === select.value);
+    if (key === "study") study = select.value;
+  }
+  const select = $("#scenario-select");
+  fillSelect(select, matches.map((run) => [run.id, `${run.run} · ${run.variant}`]));
+  select.closest("label").hidden = matches.length < 2;
+  const chosen = matches.find((run) => run.id === select.value);
+  updateScenarioMeta(chosen, matches.length);
+  return chosen;
+}
 
 function mix(a, b, amount) {
   const parse = (hex) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16));
@@ -47,7 +120,12 @@ function formatClock(step) {
 
 function displayedRow(metric, time) {
   const source = time < state.cutoff ? state.data : state.data.baseline;
-  return source[metric][time];
+  return time < historySteps(source) ? source[metric][time] : null;
+}
+
+function historySteps(source) {
+  const { metadata } = state.data;
+  return source === state.data ? metadata.controlledSteps : metadata.baselineSteps;
 }
 
 function showError(message) {
@@ -98,14 +176,14 @@ function setCutoff(cutoff) {
     ? "BASELINE"
     : state.cutoff === steps
       ? "CONTROLLED"
-      : `CONTROL ${state.cutoff} / ${steps}`;
+      : `${state.cutoff > state.data.metadata.observedSteps ? "DRAIN" : "REVEAL"} ${state.cutoff} / ${steps}`;
   updateRoad();
   updateStats();
   drawHeatmaps();
   drawSavingsChart();
   for (const canvas of $$("canvas[role='slider']")) {
     canvas.setAttribute("aria-valuenow", state.cutoff);
-    canvas.setAttribute("aria-valuetext", `Controlled through ${formatClock(state.cutoff)}`);
+    canvas.setAttribute("aria-valuetext", `Controlled history revealed through ${formatClock(state.cutoff)}`);
   }
 }
 
@@ -113,17 +191,31 @@ function updateRoad() {
   const { frame } = state;
   const velocities = displayedRow("velocity", frame);
   const densities = displayedRow("density", frame);
+  const ended = velocities === null;
+  const sourceLabel = frame < state.cutoff ? "Controlled" : "Baseline";
+  const draining = frame >= state.data.metadata.observedSteps;
+  $("#road-phase").textContent = ended
+    ? `${sourceLabel} history ended`
+    : `${sourceLabel} · ${draining ? "drainage: VSL released, no new demand" : "observed window"}`;
   $$(".road-segment").forEach((segment, index) => {
-    const velocity = velocities[index];
-    const density = densities[index];
+    const velocity = velocities?.[index] ?? 0;
+    const density = densities?.[index] ?? 0;
     const motion = state.roadMotion[index];
     if (motion) {
       motion.targetVelocity = velocity;
       motion.targetDensity = density;
+      motion.ended = ended;
     }
+    segment.classList.toggle("history-ended", ended);
     const lanes = Number(state.data.metadata.lanes[index].toFixed(2));
-    segment.title = `Segment ${index + 1} (${lanes} lanes): ${velocity.toFixed(1)} km/h, ${density.toFixed(1)} veh/km/lane`;
+    segment.title = ended ? `Segment ${index + 1}: ${sourceLabel.toLowerCase()} history ended`
+      : `Segment ${index + 1} (${lanes} lanes): ${velocity.toFixed(1)} km/h, ${density.toFixed(1)} veh/km/lane`;
   });
+  if (ended) {
+    $("#current-speed").textContent = "—";
+    $("#current-density").textContent = "—";
+    return;
+  }
   const meanSpeed = velocities.reduce((sum, value) => sum + value, 0) / velocities.length;
   const meanDensity = densities.reduce((sum, value) => sum + value, 0) / densities.length;
   $("#current-speed").textContent = meanSpeed.toFixed(1);
@@ -134,17 +226,20 @@ function updateStats() {
   const { data, cutoff } = state;
   const { timeSteps, segments } = data.metadata;
   let velocitySum = 0;
+  let velocityCount = 0;
   let peakDensity = 0;
   let peakQueue = 0;
 
   for (let time = 0; time < timeSteps; time += 1) {
     const source = time < cutoff ? data : data.baseline;
+    if (time >= historySteps(source)) continue;
     const queue = source.queue[time];
     peakQueue = Math.max(peakQueue, queue);
     for (let segment = 0; segment < segments; segment += 1) {
       const velocity = source.velocity[time][segment];
       const density = source.density[time][segment];
       velocitySum += velocity;
+      velocityCount += 1;
       peakDensity = Math.max(peakDensity, density);
     }
   }
@@ -156,7 +251,7 @@ function updateStats() {
   const percentage = percent === null ? "" : ` · ${percent.toFixed(1)}% of baseline delay`;
   $("#delay").textContent = delay.toFixed(2);
   $("#delay-readout").textContent = `${saved.toFixed(2)} veh-hr saved${percentage}`;
-  $("#mean-velocity").textContent = (velocitySum / (timeSteps * segments)).toFixed(1);
+  $("#mean-velocity").textContent = velocityCount ? (velocitySum / velocityCount).toFixed(1) : "—";
   $("#peak-density").textContent = peakDensity.toFixed(1);
   $("#peak-queue").textContent = peakQueue.toFixed(1);
 }
@@ -170,6 +265,7 @@ function animateRoad(timestamp) {
 
   if (velocityRange && densityRange) {
     state.roadMotion.forEach((motion) => {
+      if (motion.ended) return;
       motion.velocity += (motion.targetVelocity - motion.velocity) * smoothing;
       motion.density += (motion.targetDensity - motion.density) * smoothing;
       if (!prefersReducedMotion) {
@@ -223,8 +319,8 @@ function buildRoad() {
     element.append(label);
     road.append(element);
 
-    const velocity = displayedRow("velocity", state.frame)[segment];
-    const density = displayedRow("density", state.frame)[segment];
+    const velocity = displayedRow("velocity", state.frame)?.[segment] ?? 0;
+    const density = displayedRow("density", state.frame)?.[segment] ?? 0;
     state.roadMotion.push({
       element,
       velocity,
@@ -232,9 +328,32 @@ function buildRoad() {
       density,
       targetDensity: density,
       phase: 0,
+      ended: false,
     });
   }
   ensureRoadAnimation();
+}
+
+function drawDrainageBoundary(context, margin, plotWidth, plotHeight) {
+  const { observedSteps, timeSteps } = state.data.metadata;
+  if (observedSteps >= timeSteps) return;
+  const x = margin.left + observedSteps / timeSteps * plotWidth;
+  context.save();
+  context.strokeStyle = "#f1e5b3";
+  context.lineWidth = 1.5;
+  context.setLineDash([4, 4]);
+  context.beginPath();
+  context.moveTo(x, margin.top);
+  context.lineTo(x, margin.top + plotHeight);
+  context.stroke();
+  context.font = "10px sans-serif";
+  const alignRight = x > margin.left + plotWidth - 60;
+  context.textAlign = alignRight ? "right" : "left";
+  context.fillStyle = "#101417";
+  context.fillRect(alignRight ? x - 57 : x + 3, margin.top + 3, 54, 14);
+  context.fillStyle = "#f1e5b3";
+  context.fillText("Drainage", x + (alignRight ? -6 : 6), margin.top + 14);
+  context.restore();
 }
 
 function drawHeatmap(canvas, optimized, baseline, metric, range) {
@@ -258,8 +377,10 @@ function drawHeatmap(canvas, optimized, baseline, metric, range) {
 
   for (let time = 0; time < timeCount; time += 1) {
     const row = time < state.cutoff ? optimized[time] : baseline[time];
+    const available = time < (time < state.cutoff
+      ? state.data.metadata.controlledSteps : state.data.metadata.baselineSteps);
     for (let segment = 0; segment < segmentCount; segment += 1) {
-      context.fillStyle = colorFor(row[segment], range, metric);
+      context.fillStyle = available ? colorFor(row[segment], range, metric) : "#465159";
       const y = margin.top + (segmentCount - segment - 1) * cellHeight;
       context.fillRect(margin.left + time * cellWidth, y, Math.ceil(cellWidth) + 0.5, Math.ceil(cellHeight) + 0.5);
     }
@@ -274,6 +395,8 @@ function drawHeatmap(canvas, optimized, baseline, metric, range) {
     context.lineTo(dividerX, margin.top + plotHeight);
     context.stroke();
   }
+
+  drawDrainageBoundary(context, margin, plotWidth, plotHeight);
 
   context.fillStyle = "#81939b";
   context.font = "11px ui-monospace, SFMono-Regular, Menlo, monospace";
@@ -345,7 +468,7 @@ function drawSavingsChart() {
     const minutes = steps * state.data.metadata.timeStepSeconds / 60 * tick / 4;
     ctx.fillText(`${Number(minutes.toFixed(1))}`, x(steps * tick / 4), height - 25);
   }
-  ctx.fillText("Controlled through (min)", margin.left + plotWidth / 2, height - 6);
+  ctx.fillText("History revealed through (min)", margin.left + plotWidth / 2, height - 6);
 
   ctx.setLineDash([5, 5]);
   for (const [value, color] of [[0, "#98a2a8"], [baseline - controlled, "#7d8c44"]]) {
@@ -374,6 +497,7 @@ function drawSavingsChart() {
   ctx.beginPath();
   ctx.arc(x(state.cutoff), y(byCutoff[state.cutoff]), 4, 0, 2 * Math.PI);
   ctx.fill();
+  drawDrainageBoundary(ctx, margin, plotWidth, plotHeight);
 }
 
 function cutoffFromPointer(canvas, clientX) {
@@ -400,6 +524,16 @@ function renderScenario() {
   $("#baseline-delay").textContent = "0.00";
   $("#controlled-delay").textContent = (data.delay.baseline - data.delay.controlled).toFixed(2);
   $("#free-flow-time").textContent = data.delay.freeFlow.toFixed(2);
+  const { metadata } = data;
+  const warnings = metadata.warnings ?? [];
+  $("#ended-key").hidden = metadata.baselineSteps === metadata.controlledSteps;
+  $("#drainage-note").hidden = !metadata.hasDrainage && !metadata.drainageRequested && !warnings.length;
+  $("#drainage-note").textContent = metadata.hasDrainage
+    ? `Drainage starts at ${formatClock(metadata.observedSteps)}: VSL released, no new demand. `
+      + `Baseline history ends at ${formatClock(metadata.baselineSteps)}; controlled history ends at ${formatClock(metadata.controlledSteps)}. `
+      + "Gray means the recorded history has ended, not necessarily an empty road."
+    : "Replayed with drainage enabled; neither history extends beyond the observed window.";
+  if (warnings.length) $("#drainage-note").textContent += ` Warning: ${warnings.join(" ")}`;
   for (const canvas of $$("canvas[role='slider']")) {
     canvas.setAttribute("aria-valuemin", "0");
     canvas.setAttribute("aria-valuemax", data.metadata.timeSteps);
@@ -414,9 +548,12 @@ async function loadScenario(id) {
   state.requestController = request;
   state.data = null;
   state.roadMotion = [];
+  const drainage = $("#include-drainage").checked;
+  $("#loading-message").textContent = drainage
+    ? "Replaying saved policy with drainage…" : "Loading traffic state…";
   setLoading(true);
   try {
-    const response = await fetch(`/api/scenario?id=${encodeURIComponent(id)}`, { signal: request.signal });
+    const response = await fetch(`/api/scenario?id=${encodeURIComponent(id)}${drainage ? "&drain=1" : ""}`, { signal: request.signal });
     const payload = await response.json();
     if (request.signal.aborted) return;
     if (!response.ok) throw new Error(payload.error || "This saved run could not be loaded.");
@@ -437,24 +574,24 @@ async function initialize() {
     state.scenarios = payload.scenarios;
     if (!state.scenarios.length) throw new Error("No valid .npz run bundles found in results/. Save a run with save_result first.");
 
-    const select = $("#scenario-select");
-    select.replaceChildren(...state.scenarios.map((scenario) => {
-      const option = document.createElement("option");
-      option.value = scenario.id;
-      option.textContent = scenario.label;
-      return option;
-    }));
-    select.disabled = false;
-    updateScenarioMeta(state.scenarios[0]);
-    await loadScenario(state.scenarios[0].id);
+    $("#include-drainage").disabled = false;
+    const scenario = refreshScenarioFilters();
+    await loadScenario(scenario.id);
   } catch (error) {
     showError(error.message);
   }
 }
 
-function updateScenarioMeta(scenario) {
+function updateScenarioMeta(scenario, matchingCount = $("#scenario-select").options.length) {
   const container = $("#scenario-meta");
-  container.replaceChildren(...[scenario.date, scenario.calibration, scenario.variant || "standard run"].map((value) => {
+  const values = [scenario.network, scenario.date,
+    calibrationLabels[scenario.calibrationSource] ?? scenario.calibrationSource,
+    scenario.calibrationInterval == null ? null : `${scenario.calibrationInterval}-step calibration`,
+    studyLabels[scenario.study] ?? scenario.study,
+    scenario.variant,
+    `${matchingCount} matching ${matchingCount === 1 ? "run" : "runs"} · ${state.scenarios.length} available`,
+  ];
+  container.replaceChildren(...values.filter(Boolean).map((value) => {
     const span = document.createElement("span");
     span.textContent = value;
     return span;
@@ -463,9 +600,14 @@ function updateScenarioMeta(scenario) {
 
 $("#scenario-select").addEventListener("change", (event) => {
   const scenario = state.scenarios.find((item) => item.id === event.target.value);
-  if (scenario) updateScenarioMeta(scenario);
-  loadScenario(event.target.value);
+  if (!scenario) return;
+  updateScenarioMeta(scenario);
+  loadScenario(scenario.id);
 });
+for (const [, id] of scenarioFilters) {
+  $(`#${id}`).addEventListener("change", () => loadScenario(refreshScenarioFilters().id));
+}
+$("#include-drainage").addEventListener("change", () => loadScenario($("#scenario-select").value));
 
 $("#play-button").addEventListener("click", () => state.playing ? stopPlayback() : startPlayback());
 $("#timeline").addEventListener("input", (event) => {

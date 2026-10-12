@@ -32,12 +32,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
 
-from traffic_flow.console import announce_save, announce_file
+from traffic_flow.console import print_save, print_file
 from traffic_flow.results.plots import Plotter
 from traffic_flow import load_results, Study
 
-from traffic_flow import CalSource, CalRef
-from traffic_flow.paths import REPO_DIR
+from traffic_flow import CalSource, CalRef, LATEST_UPDATE
 from traffic_flow.results.analysis import run_analysis
 from traffic_flow.pipeline import replay
 
@@ -81,7 +80,7 @@ def load_scalar_sweep(study: Study, max_value=None):
     for run in load_results("i24", DATE, CalRef(CalSource.FIXED_RAMPS, interval=None), study):
         if max_value is not None and getattr(run.config, study) > max_value: capped += 1; continue
         if not (run.optimization.vsl == 150.).all(): 
-            out.append((getattr(run.config, study), run_analysis(replay(run, until_ff=True)).cc))
+            out.append((getattr(run.config, study), run_analysis(replay(run, until_ff=LATEST_UPDATE)).cc))
         else: failed += 1
     out.sort()
     values = np.array([v for v, _ in out], dtype=float)
@@ -95,7 +94,7 @@ def load_safety_grid() -> tuple[dict[tuple[float, float], float], int]:
         if not (run.optimization.vsl == 150.).all(): 
             temp, spat = run.config.safety_temporal, run.config.safety_spatial
             assert temp is not None and spat is not None
-            grid[(float(temp), float(spat))] = run_analysis(replay(run, until_ff=True)).cc
+            grid[(float(temp), float(spat))] = run_analysis(replay(run, until_ff=LATEST_UPDATE)).cc
         else: failed += 1
     return grid, failed
 
@@ -148,7 +147,7 @@ def report_coverage(grid):
 def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
     p = Plotter(2, 2, figsize=(13, 9))
     for i, param in enumerate([hold, speed, temporal, spatial]):
-        p[i].plot(*param, color=LINE_COLOR, linewidth=4, marker="o", markersize=5, zorder=3)
+        p[i].plot(*param[:2], color=LINE_COLOR, linewidth=4, marker="o", markersize=5, zorder=3)
         p[i].fill_between(param[0], 0, param[1], color=FILL_COLOR, alpha=0.25, zorder=2)
         p[i].axhline(param[1].max(), color=MAXLINE_COLOR, linestyle="--", linewidth=3, zorder=4)
         p[i] = {'xlim': (0, float(np.max(param[0]))), 'ylim': (0, max(60, param[1].max() * 1.2))}
@@ -164,7 +163,7 @@ def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
     ]): p[i] = {'xlabel': xtitle, 'ylabel': "Controllable congestion (%)", 'title': title}
     p.fig.tight_layout()
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    announce_save(save_path)
+    print_save(save_path)
 
 def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3):
     """Controllable congestion over the full (temporal, spatial) safety grid.
@@ -212,12 +211,12 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
                         color="white" if values[i, j] < threshold else "black")
     p.fig.colorbar(im, ax=p[0], fraction=0.046, pad=0.02, label="Controllable congestion (%)")
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    announce_save(save_path)
+    print_save(save_path)
     return p.fig
 
 
 if __name__ == "__main__":
-    announce_file(Path(__file__))
+    print_file(Path(__file__))
 
     hold_x, hold_y, hold_failed, _ = load_scalar_sweep(Study.HOLD_LENGTH)
     speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep(Study.SPEED_LB, MAX_SPEED_LB)
