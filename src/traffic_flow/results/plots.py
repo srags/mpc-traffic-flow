@@ -4,9 +4,14 @@ from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import Normalize
+from matplotlib.projections import register_projection
+
+from traffic_flow.config import ScenarioConfig
+from traffic_flow.console import print_save
 
 from ..model.simulation import *
 from ..types import time_space
+from typing import Literal
 
 preset_figsizes = {
   (1, 1): (10, 5),
@@ -17,6 +22,34 @@ preset_figsizes = {
 
 plt.rcParams.update({'font.family': 'Times New Roman'})
 
+def format_time(start_hour: hr, minutes: float) -> str:
+  hour, minute = divmod(int(start_hour * 60 + minutes), 60)
+  return f"{hour % 24:02d}:{minute:02d}"
+
+class PlotterAxes(Axes):
+  def parent(self, p: "Plotter"):
+    self._parent = p
+    return self
+  def plot_time_space(self, data: time_space, spec: ScenarioConfig, start_time: hr, vmax: float, title: str = "",
+                    colorbar: None | tuple[Literal["h", "v"], str] = None, grid: bool = False,
+                    cmap: str = 'RdYlGn', vmin = 0., smooth: bool = False, **kwargs) -> ScalarMappable:
+    """Plot a time-space diagram of the given data."""
+    image = self.imshow(data.T, cmap=cmap, aspect='auto', extent=(0, data.shape[0], data.shape[1], 0),
+                        interpolation='antialiased' if smooth else 'none', vmin=vmin, vmax=vmax)
+    time_steps, num_segments = data.shape
+    minutes = np.arange(0, time_steps + 1, 60)
+    self.set(title=title, xlabel='Time', ylabel='Distance (km)',
+      xticks=np.arange(0, time_steps + 1, 60), xticklabels=[format_time(start_time, m * spec.time_step * 60) for m in minutes],
+      yticks=np.arange(0, num_segments, 1/spec.L), yticklabels=np.round(np.arange(0, num_segments * spec.L, 1), 2))
+    if colorbar is not None:
+      self._parent.fig.colorbar(image, ax=self, label=colorbar[1],
+        orientation="horizontal" if colorbar[0] == "h" else None, **kwargs)
+    self.invert_yaxis()
+    if grid: self.grid()
+    return image
+
+register_projection(PlotterAxes)
+
 class Plotter:
   def __init__(self, rows: int, cols: int, figsize = None):
     if figsize is None and (rows, cols) in preset_figsizes: 
@@ -25,18 +58,15 @@ class Plotter:
     self.cols = cols
     self.fig, self.axs = plt.subplots(rows, cols, figsize = figsize, squeeze=False)
 
-  def __getitem__(self, id: int | tuple) -> Axes:
-    if isinstance(id, tuple):
-        return self.axs[id] # type: ignore
-    return self.axs.flat[id]
-
-  def __setitem__(self, id: int | tuple, kwargs: dict):
-    for key, value in kwargs.items(): getattr(self[id], "set_" + key)(value)
+  def __getitem__(self, id: int | tuple) -> PlotterAxes:
+    axes = cast(PlotterAxes, self.axs[id] if isinstance(id, tuple) else self.axs.flat[id])
+    axes.parent(self)
+    return axes
 
   def __iter__(self):
     for i in range(self.rows * self.cols): yield self[i]
 
-  def colorbar(self, image: ScalarMappable, *, axes: list[int], label: str = "",) -> Colorbar:
+  def colorbar(self, image: ScalarMappable, axes: list[int], label: str = "",) -> Colorbar:
     return self.fig.colorbar(
       image, ax=[self[i] for i in axes],
       label=label, pad=0.02,
@@ -53,8 +83,7 @@ class Plotter:
       if ax.get_legend_handles_labels()[1]: ax.legend()
     # plt.tight_layout()
     self.fig.savefig(*args, **kwargs)
-
-
+    print_save(args[0])
 
 def plot_velocity_comparison(observed: time_space, simulated: time_space) -> Plotter:
     """Compare aligned (time, segment) velocity arrays in km/hr."""
@@ -68,52 +97,10 @@ def plot_velocity_comparison(observed: time_space, simulated: time_space) -> Plo
     p = Plotter(1, 2)
     for i, (values, title) in enumerate([(observed, "Observed velocity"), (simulated, "Simulated velocity")]):
         image = p[i].imshow(values.T, aspect="auto", origin="lower", cmap="RdYlGn", interpolation="none", norm=norm)
-        p[i] = {"title": title, "xlabel": "Time step", "ylabel": "Segment index"}
+        p[i].set(title=title, xlabel="Time step", ylabel="Segment index")
 
     p.colorbar(image, axes=[0, 1], label="Velocity (km/hr)")
     return p
-
-def plot_vsls(vsl_matrix: np.ndarray, time_steps: int, num_segm: int, v_free: float, T=10/3600, l=0.5):
-    '''
-    Given a matrix of VSL speeds, plot the VSL speeds as a heatmap. 
-    (0,0) is the top left corner of the matrix. Rows represent time steps and columns represent segments.
-    '''
-    p = Plotter(1, 1)
-    p.fig.colorbar(p[0].imshow(vsl_matrix.T, cmap='RdYlGn', aspect='auto', interpolation='none', vmin=0, vmax=v_free),
-      label='VSL speed (km/hr)')
-    p[0] = {'title': 'Optimal VSL Speeds', 'xlabel': 'Time (min)', 'ylabel': 'Distance (km)',
-            'xticks': np.arange(0, time_steps, 60), 'xticklabels': (np.arange(0, time_steps * T * 60, 60 * T * 60)).astype(int),
-            'yticks': np.arange(0, num_segm, 2), 'yticklabels': np.round(np.arange(0, num_segm*l, 2*l), 2)}
-    p[0].invert_yaxis()
-    p[0].grid()
-    p.show()
-
-def plot_outflow(traffic_demand, downstream_density, vsl_control, lane_map, v_free, T=10/3600, l=500/1000, seg=0):
-    time_steps, num_segm = vsl_control.shape
-
-    start_state = MetanetState(np.full(num_segm, 0), np.full(num_segm, 0), traffic_demand[0], 0)
-    
-    # p_nocontrol, v_nocontrol, queue_nocontrol, tts_nocontrol = run_metanet_sim_plottable(T, l, start_state, np.full((time_steps, num_segm), v_free), traffic_demand, downstream_density, lanes=lane_map)
-    # p_optimal, v_optimal, queue_optimal, tts_optimal = run_metanet_sim_plottable(T, l, start_state, vsl_control, traffic_demand, downstream_density, lanes=lane_map)
-    p_nocontrol, v_nocontrol, queue_nocontrol, tts_nocontrol = np.zeros((4, time_steps, num_segm))
-    p_optimal, v_optimal, queue_optimal, tts_optimal = np.zeros((4, time_steps, num_segm))
-
-    improvement_tts = round((tts_nocontrol - tts_optimal)/tts_nocontrol * 100, 1)
-
-    lane_list = np.array(list(lane_map.values()))
-    lane_array = np.tile(lane_list, (time_steps+1, 1))
-    outflow_opt = v_optimal * p_optimal * lane_array
-    outflow_nocontrol = v_nocontrol * p_nocontrol * lane_array
-
-    p = Plotter(1, 1, figsize=(20, 10))
-    p[0] = {'title': f'Flow out of segment {seg}',
-            'xlabel': 'Time (min)', 'ylabel': 'Flow (veh/hr)', 
-            'xticks': np.arange(0, time_steps, 120), 'xticklabels': (np.arange(0, time_steps * T * 60, 120 * T * 60)).astype(int),}
-    p[0].plot(outflow_opt[:, seg], label='Optimal')
-    p[0].plot(outflow_nocontrol[:, seg], label='No Control')
-    p[0].axhline(y=2200 * lane_map[seg+1], color='r', linestyle='--', label='Capacity of next segment')
-    p[0].legend()
-    p.show()
 
 def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane_map, v_free, T=10/3600, l=500/1000, plot_v=True, plot_p=False, plot_q=False, params=None):
     plot_var = np.array([plot_v, plot_p, plot_q])
@@ -153,26 +140,23 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
 
     if plot_v:
         p[i].imshow(v_nocontrol.T, cmap='RdYlGn', aspect='auto', extent=(0, time_steps+1, num_segm, 0), vmin=0, vmax=v_free, interpolation='None')
-        p[i] = {
-            'title': 'Delay: {:.1f} veh-hr'.format(delay_nocontrol),
-            'xticks': []
-        }
+        p[i].set(title='Delay: {:.1f} veh-hr'.format(delay_nocontrol), xticks=[])
         im_v = p[i+1].imshow(v_optimal.T, cmap='RdYlGn', aspect='auto', extent=(0, time_steps+1, num_segm, 0), vmin=0, vmax=v_free, interpolation='None')
         p.fig.colorbar(im_v, label='Velocity (km/hr)', ax=p[i+1])
-        p[i+1] = {
-            'title': f'Delay: {delay_optimal:.1f} veh-hr',
-            'xticks': np.arange(0, time_steps, 120), 'xticklabels': (np.arange(0, time_steps * T * 60, 120 * T * 60)).astype(int),
-            'xlabel': 'Time (min)'
-        }
+        p[i+1].set(
+            title=f'Delay: {delay_optimal:.1f} veh-hr',
+            xticks=np.arange(0, time_steps, 120), xticklabels=(np.arange(0, time_steps * T * 60, 120 * T * 60)).astype(int),
+            xlabel='Time (min)',
+        )
         im_cc = p[i+2].imshow(v_optimal.T - v_nocontrol.T, cmap='RdYlBu', extent=(0, time_steps+1, num_segm, 0), aspect='auto', vmin=-100, vmax=100, interpolation='None')
-        p[i+2] = {'title': f'{improvement_tts}% delay reduction\nVelocity Improvement'}
+        p[i+2].set(title=f'{improvement_tts}% delay reduction\nVelocity Improvement')
         p.fig.colorbar(im_cc, label='Velocity Difference (km/hr)', ax=p[i+2], extend='both')
         i += 3
     if plot_p:
         p[i].imshow(p_nocontrol.T, cmap='RdYlGn_r', aspect='auto', extent=(0, time_steps+1, num_segm, 0), vmin=0, vmax=180, interpolation='None')
-        p[i] = {'title': 'Density without control'}
+        p[i].set(title='Density without control')
         im_p = p[i+1].imshow(p_optimal.T, cmap='RdYlGn_r', aspect='auto', extent=(0, time_steps+1, num_segm, 0), vmin=0, vmax=180)
-        p[i+1] = {'title': 'Density with control'}
+        p[i+1].set(title='Density with control')
         p.fig.colorbar(im_p, label='Density (veh/km)', ax=p[i+1])
 
         if plot_v:
@@ -181,9 +165,9 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
     if plot_q:
         max_val = max((v_nocontrol*p_nocontrol* lane_array).max(), (v_optimal*p_optimal*lane_array).max())
         p[i].imshow(v_nocontrol.T * p_nocontrol.T * lane_array.T, cmap='viridis', aspect='auto', extent=(0, time_steps+1, num_segm, 0), vmin=0, vmax=max_val, interpolation='None')
-        p[i] = {'title': 'Flow without control'}
+        p[i].set(title='Flow without control')
         im_q = p[i+1].imshow(v_optimal.T * p_optimal.T * lane_array.T, cmap='viridis', aspect='auto', extent=(0, time_steps+1, num_segm, 0), vmin=0, vmax=max_val)
-        p[i+1] = {'title': 'Flow with control'}
+        p[i+1].set(title='Flow with control')
         p.fig.colorbar(im_q, label='Flow (veh/hr)', ax=p[i+1])
 
         if plot_v: p.fig.delaxes(p[i//3,2])
@@ -200,72 +184,6 @@ def plot_nocontrol_control(traffic_demand, downstream_density, vsl_control, lane
     p.fig.subplots_adjust(hspace=0.4)
     p.show()
 
-from pathlib import Path
-from .analysis import MPCStats
-from ..console import print_save
-
-def save_cc_plots(pct_decrease: time_space, run_result: RunResult, stats: MPCStats, output_dir: Path, *, start_hour: float = 7.5):
-    """Save optimal_vsl.png and controlled.png, preserving the cc_plot layout.
-
-    No solver/simulator runs or policy writes. Matplotlib is imported only here.
-    """
-    spec, traffic = run_result.scenario.spec, run_result.scenario.traffic
-    result = run_result.optimization
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    p = Plotter(1, 1)
-    display_vsl = np.where(result.vsl > run_result.params["v_free"], 150, result.vsl)
-    p.fig.colorbar(p[0].imshow(display_vsl.T, cmap='RdYlGn', aspect='auto', interpolation='none',
-                             vmin=0, vmax=run_result.params['v_free'].max()), label='VSL speed (km/hr)')
-    p[0] = {
-        'title': 'Optimal VSL Speeds', 'xlabel': 'Time (min)', 'ylabel': 'Distance (km)',
-        'xticks': np.arange(0, spec.time_steps + 1, 60),
-        'xticklabels': np.arange(0, (spec.time_steps + 1) * spec.time_step * 60, 60 * spec.time_step * 60).astype(int),
-        'yticks': np.arange(0, spec.num_segments, 2),
-        'yticklabels': np.round(np.arange(0, spec.num_segments * spec.L, 2 * spec.L), 2),
-    }
-    p[0].invert_yaxis()
-    p[0].grid()
-    p.savefig(output_dir / "optimal_vsl.png")
-    print_save(output_dir / "optimal_vsl.png")
-
-    n_time = traffic.velocity.shape[0]
-    minutes = np.arange(n_time) * spec.time_step * 60
-    tick_pos = np.linspace(0, n_time - 1, 5, dtype=int)
-
-    def format_time(minutes: float) -> str:
-        hour, minute = divmod(int(start_hour * 60 + minutes), 60)
-        return f"{hour % 24:02d}:{minute:02d}"
-
-    tick_labels = [format_time(m) for m in minutes[tick_pos]]
-    ytick_pos = np.linspace(0, traffic.velocity.shape[1] - 1, 5, dtype=int)
-    ytick_labels = [f"{i * spec.L:.1f}" for i in ytick_pos]
-    p = Plotter(1, 4)
-    for i, mat in enumerate((traffic.velocity, result.baseline.velocity[:n_time], result.controlled.velocity[:n_time])):
-        p.fig.colorbar(
-            mappable=p[i].imshow(mat.T, cmap='RdYlGn', aspect='auto', interpolation='none',
-                                vmin=0, vmax=max(traffic.velocity.max(), run_result.optimization.baseline.velocity[:n_time].max())),
-            ax=p[i], label='Velocity (km/hr)', orientation='horizontal',
-        )
-    p.fig.colorbar(
-        mappable=p[3].imshow(pct_decrease, cmap='inferno', aspect='auto', vmin=-100, vmax=100),
-        ax=p[3], label='% Decrease in Delay', orientation='horizontal', location='bottom',
-        pad=0.15, shrink=0.8, aspect=20,
-    )
-    for i, _ in enumerate(p):
-        p[i] = {'xlabel': 'Time', 'ylabel': 'Distance (km)', 'xticks': tick_pos, 'yticks': ytick_pos,
-                'xticklabels': tick_labels, 'yticklabels': ytick_labels}
-        p[i].invert_yaxis()
-    p[0] = {'title': f'{spec.freeway.upper().replace("I24", "I-24")} Ground Truth'}
-    p[1] = {'title': f'METANET Simulation\n(TT: {np.round(result.baseline.total_travel_time, 2)} veh-hr, Delay: {np.round(stats.sim_tt - stats.ff_tt, 2)} veh-hr)'}
-    p[2] = {'title': f'VSL Control\n(TT: {np.round(result.controlled.total_travel_time, 2)} veh-hr, Delay: {np.round(stats.opt_tt - stats.ff_tt, 2)} veh-hr)'}
-    p[3] = {'title': '% Decrease in Delay'}
-
-    p.savefig(output_dir / "controlled.png")
-    print_save(output_dir / "controlled.png")
-
-
 def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
     m, time_steps = macro_velocity_field.shape
     p = Plotter(1, 1)
@@ -276,18 +194,18 @@ def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
         ),
         ax=p[0], label="Velocity (km/hr)",
     )
-    p[0] = {
-        "xlabel": "Time (min)",
-        "ylabel": "Space (segments)",
-        "title": "Virtual Trajectory",
-        "xlim": (0, time_steps),
-        "xticks": np.arange(0, time_steps + 1, 10),
-        "yticks": np.arange(0, m + 1, 1),
-        "xticklabels": tuple(
+    p[0].set(
+        xlabel="Time (min)",
+        ylabel="Space (segments)",
+        title="Virtual Trajectory",
+        xlim=(0, time_steps),
+        xticks=np.arange(0, time_steps + 1, 10),
+        yticks=np.arange(0, m + 1, 1),
+        xticklabels=tuple(
             str(int(i * 10 / 60)) if i % 120 == 0 else None
             for i in range(0, time_steps + 1, 10)
         ),
-    }
+    )
     for time_points, space_points in virtual_trajectories:
         p[0].plot(
             time_points, 15 - np.array(space_points),
@@ -295,46 +213,3 @@ def plot_virtual_trajectories(macro_velocity_field, virtual_trajectories):
         )
     p[0].grid()
     p.show()
-
-def save_reveal_plots(result: RunResult, output_dir: Path, checkpoints: int = 16, batches: int = 4):
-  """Save a progressive reveal of the existing baseline and controlled trajectories."""
-  import numpy as np
-  from traffic_flow.results.plots import Plotter
-
-  if checkpoints < 2 or batches < 1 or checkpoints % batches:
-    raise ValueError("CHECKPOINTS must be at least 2 and divisible by BATCHES")
-  scenario, params = result.scenario, result.params
-  spec = scenario.spec
-  baseline = result.optimization.baseline.velocity[:spec.time_steps]
-  controlled = result.optimization.controlled.velocity[:spec.time_steps]
-  # Keep the notebook's speed substitution to isolate the origin-mode change.
-  optimal_vsl = np.where(result.optimization.vsl > params["v_free"], 150, result.optimization.vsl)
-  free_vsl = np.full_like(optimal_vsl, 150)
-
-  times = np.rint(np.linspace(0, len(optimal_vsl), checkpoints)).astype(int)
-  columns = checkpoints // batches
-  p = Plotter(2 * batches, columns, figsize=(5 * columns, 5 * batches))
-  vmax = max(scenario.traffic.velocity.max(), baseline.max())
-  extent = (0, spec.time_steps * spec.time_step * 60, 0, spec.num_segments * spec.L)
-
-  for k, t in enumerate(times):
-    vsl = free_vsl.copy()
-    vsl[:t] = optimal_vsl[:t]
-    velocity = baseline.copy()
-    velocity[:t] = controlled[:t]
-    batch, column = divmod(k, columns)
-    for row, data, label, first, last in (
-      (2 * batch, vsl, "VSL Speeds", "Free VSL Speeds", "Optimal VSL Speeds"),
-      (2 * batch + 1, velocity, "Time Space", "Baseline Time Space", "Optimized Time Space"),
-    ):
-      ax = p[row, column]
-      ax.imshow(data.T, cmap="RdYlGn", aspect="auto", interpolation="none",
-                origin="lower", extent=extent, vmin=0, vmax=vmax)
-      if 0 < t < len(optimal_vsl): ax.axvline(t * spec.time_step * 60, color="black", linewidth=3)
-      ax.set(title=first if k == 0 else last if k == checkpoints - 1 else f"{label} {k}",
-              xlabel="Time (min)", ylabel="Distance (km)")
-
-  p.fig.tight_layout()
-  output_dir.mkdir(parents=True, exist_ok=True)
-  p.savefig(output_dir / "cc_reveal_evaluate.png", dpi=150)
-  print_save(output_dir / "cc_reveal_evaluate.png")

@@ -22,7 +22,7 @@ def paths(*args): return set(git(*args).split("\0")) - {""}
 def count(files: set[str], read):
     src = experiments = notebooks = python = 0
     for path in sorted(files):
-        if path.startswith("tests/"): continue
+        if path.startswith("tests/") or path.startswith("html/"): continue
         if path.endswith(".py"):
             size = code_size(read(path))
             python += size

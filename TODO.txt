@@ -29,12 +29,13 @@ day selection
 backend:
 dynamic calibration
 
-pipeline (simulate_scenario)
+pipeline DONE
 make sure I_24_table. work DONE
 analysis DONE
 run_dir into collection_dir DONE
-merge with main (IMPORTANT!)
+merge with main (IMPORTANT!) DONE
 plot_constraints.ipynb
 synthetic generation
 toy network thing
 
+refactor heatmap plotting

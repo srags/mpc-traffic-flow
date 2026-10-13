@@ -32,7 +32,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tabulate import tabulate
 
-from traffic_flow.console import print_save, print_file
+from traffic_flow.console import print_file
 from traffic_flow.results.plots import Plotter
 from traffic_flow import load_results, Study
 
@@ -150,7 +150,7 @@ def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
         p[i].plot(*param[:2], color=LINE_COLOR, linewidth=4, marker="o", markersize=5, zorder=3)
         p[i].fill_between(param[0], 0, param[1], color=FILL_COLOR, alpha=0.25, zorder=2)
         p[i].axhline(param[1].max(), color=MAXLINE_COLOR, linestyle="--", linewidth=3, zorder=4)
-        p[i] = {'xlim': (0, float(np.max(param[0]))), 'ylim': (0, max(60, param[1].max() * 1.2))}
+        p[i].set(xlim=(0, float(np.max(param[0]))), ylim=(0, max(60, param[1].max() * 1.2)))
         p[i].grid(which="both", linestyle="-", linewidth=0.5, alpha=0.6)
         p[i].set_axisbelow(True)
     for i, (xtitle, title) in enumerate([
@@ -160,10 +160,9 @@ def plot(hold, speed, temporal, spatial, save_path=SAVE_PATH):
             f"(c) Temporal smoothness ($\\mathcal{{S}}_{{\\mathrm{{spat}}}}$ = {temporal[2]:g} km/hr)"),
         (r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
             f"(d) Spatial smoothness ($\\mathcal{{S}}_{{\\mathrm{{temp}}}}$ = {spatial[2]:g} km/hr)")
-    ]): p[i] = {'xlabel': xtitle, 'ylabel': "Controllable congestion (%)", 'title': title}
+    ]): p[i].set(xlabel=xtitle, ylabel="Controllable congestion (%)", title=title)
     p.fig.tight_layout()
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print_save(save_path)
 
 def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3):
     """Controllable congestion over the full (temporal, spatial) safety grid.
@@ -195,11 +194,11 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
 
     im = p[0].imshow(masked, cmap=cmap, aspect="auto", origin="lower",
                    vmin=0, vmax=float(masked.max()))
-    p[0] = {'xticks': range(len(spats)), 'yticks': range(len(temps)),
-            'xticklabels': [f"{s:g}" for s in spats],
-            'yticklabels': [f"{t:g}" for t in temps],
-            'xlabel': r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
-            'ylabel': r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)"}
+    p[0].set(xticks=range(len(spats)), yticks=range(len(temps)),
+            xticklabels=[f"{s:g}" for s in spats],
+            yticklabels=[f"{t:g}" for t in temps],
+            xlabel=r"Spatial bound $\mathcal{S}_{\mathrm{spat}}$ (km/hr)",
+            ylabel=r"Temporal bound $\mathcal{S}_{\mathrm{temp}}$ (km/hr per step)")
 
     if annotate:
         threshold = 0.55 * float(masked.max())
@@ -211,7 +210,6 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
                         color="white" if values[i, j] < threshold else "black")
     p.fig.colorbar(im, ax=p[0], fraction=0.046, pad=0.02, label="Controllable congestion (%)")
     p.savefig(save_path, dpi=300, bbox_inches="tight", pad_inches=0.1)
-    print_save(save_path)
     return p.fig
 
 

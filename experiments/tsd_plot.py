@@ -19,10 +19,9 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR / "src"))
 
 import numpy as np
-from tabulate import tabulate
 from traffic_flow import load_one_result, load_scenario, CalRef, CalSource, LATEST_UPDATE
 
-from traffic_flow.console import print_save, print_file
+from traffic_flow.console import print_file, print_table
 from traffic_flow.results.plots import Plotter
 from traffic_flow.results.analysis import format_date_label, run_analysis
 from traffic_flow.pipeline import replay
@@ -31,11 +30,10 @@ DATES = ["11_28", "11_29", "11_30", "12_01", "12_02"]
 # Segments 0 and 1 are left uncontrolled (see Section 5.2); the control zone
 # begins at this distance along the corridor.
 
-
 if __name__ == "__main__":
   print_file(Path(__file__))
   scenario = load_scenario("i24", DATES[0])
-  CONTROL_ZONE_START_KM = 2 * scenario.spec.L
+  CONTROL_ZONE_START_SEGMENT = 2
   corridor_km = scenario.spec.num_segments * scenario.spec.L
   duration_min = scenario.traffic.velocity.shape[0] * scenario.spec.time_step * 60
 
@@ -56,24 +54,18 @@ if __name__ == "__main__":
       ["Observed", "No control", "Optimal control"], 
       [run.scenario.traffic.velocity, run.optimization.baseline.velocity[:n_time], run.optimization.controlled.velocity[:n_time]]
       )):
-      im = p[row, col].imshow(tsd.T, aspect="auto", origin="lower", cmap="RdYlGn", 
-                              interpolation="none", vmin=0, vmax=vmax, extent=extent)
-      p[row, col].axhline(CONTROL_ZONE_START_KM, color="blue", linestyle="--", linewidth=2.5)
       head = f"({'abcdefghijklmno'[row * n_cols + col]}) {format_date_label(date)}, {title}"
       if title == "No control": 
         head += f"\nDelay = {stats.sim_tt - stats.ff_tt:.0f} veh-hrs"
       elif title == "Optimal control": 
         head += (f"\nDelay = {stats.opt_tt - stats.ff_tt:.0f} veh-hrs, CC = {stats.cc:.0f}\\%".replace("\\%", "%"))
-      p[row, col] = {"title": head, "xticks": np.arange(0, duration_min + 1, 15),
-                      "yticks": np.arange(0, corridor_km + 0.1, 1),
-                      "ylabel": "Distance (km)" if col == 0 else None,
-                      "xlabel": "Time (min)" if row == n_rows - 1 else None}
-  print(tabulate(headers=["Date", "TTT (vhr)", "Delay (vhr)", "CC (%)"], tablefmt="outline", tabular_data=table))
-
-  p.fig.subplots_adjust(right=0.89, hspace=0.32, wspace=0.08)
-  cbar_ax = p.fig.add_axes((0.91, 0.12, 0.015, 0.76))
+      im = p[row, col].plot_time_space(tsd, run.scenario.spec, 7.5, vmax, title=head, colorbar=None)
+      p[row, col].axhline(CONTROL_ZONE_START_SEGMENT, color="blue", linestyle="--", linewidth=2.5)
+      p[row, col].set(ylabel="Distance (km)" if col == 0 else "", xlabel=None)
+  p.fig.tight_layout(rect=(0, 0, 0.9, 1), h_pad=1.5, w_pad=0.5)
+  cbar_ax = p.fig.add_axes((0.91, 0.05, 0.015, 0.90))
   cbar = p.fig.colorbar(im, cax=cbar_ax)
   cbar.set_label("Velocity (km/hr)")
-
+  print_table(headers=["Date", "TTT (vhr)", "Delay (vhr)", "CC (%)"], data=table)
   p.savefig(REPO_DIR / "figs" / "tsd_plot" / "tsd.png", dpi=300, bbox_inches="tight", pad_inches=0.1)
-  print_save(REPO_DIR / "figs" / "tsd_plot" / "tsd.png")
+  

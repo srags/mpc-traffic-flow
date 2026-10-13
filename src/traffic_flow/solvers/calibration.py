@@ -121,7 +121,7 @@ def fit_fd1(
     p[0].plot(rho_range, q_fit, linewidth=2.5, label="Fitted FD1", zorder=10)
     p[0].axvline(rho_crit_opt, color="red", linestyle="--", label=f"ρ_crit = {rho_crit_opt:.1f}")
     p[0].axhline(C_opt, color="blue", linestyle=":", label=f"C = {C_opt:.1f}")
-    p[0] = {'title': 'Fundamental Diagram Fit (FD1)', 'xlabel': 'Density ρ (veh/km)', 'ylabel': 'Flow q (veh/h)'}
+    p[0].set(title='Fundamental Diagram Fit (FD1)', xlabel='Density ρ (veh/km)', ylabel='Flow q (veh/h)')
     p[0].grid()
     p.show()
 

@@ -4,7 +4,7 @@ REPO_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_DIR / "src"))
 
 import numpy as np
-from traffic_flow.console import print_save, print_title, print_file, colored
+from traffic_flow.console import print_title, print_file, colored
 from traffic_flow.results.plots import Plotter
 from traffic_flow.results.analysis import format_date_label, run_analysis
 from traffic_flow import load_one_result, CalRef, CalSource, LATEST_UPDATE
@@ -40,7 +40,6 @@ def run_static_analysis(dates, table_save, tex_save, bar_chart_save):
   with open(tex_save, "w") as f: 
       f.write(latex_table(headers=HEADERS, rows=table, 
                           label="tab:cc_static", caption="Simulation error and controllable congestion by date"))
-  print_save(tex_save)
 
   # BAR CHART
   uncontrolled, controlled = avg_tts.T
@@ -51,12 +50,11 @@ def run_static_analysis(dates, table_save, tex_save, bar_chart_save):
   p[0].bar(scenarios, uncontrolled - controlled, label="Delay reduced by control", color="#4e9858")
   for i, (height, c) in enumerate(zip(uncontrolled, rows[:, 4])):
     p[0].text(i+1, height + 0.02 * uncontrolled.max(), f"{c:.0f}", ha='center', va='bottom', fontweight='bold')
-  p[0] = {'xlabel': 'Date', 'ylabel': 'Average delay per vehicle (min)', 
-          'xticks': scenarios, 'xticklabels': map(format_date_label, dates),
-          'ylim': (0, uncontrolled.max() * 1.15), 'axisbelow': True}
+  p[0].set(xlabel='Date', ylabel='Average delay per vehicle (min)',
+          xticks=scenarios, xticklabels=map(format_date_label, dates),
+          ylim=(0, uncontrolled.max() * 1.15), axisbelow=True)
   p[0].set_xticklabels(dates, rotation=20, ha='center')
   p.savefig(bar_chart_save, dpi=300, bbox_inches='tight', pad_inches=0.1)
-  print_save(bar_chart_save)
 
 def run_dynamic_analysis(dates, table_save):
   print_title("Static + dynamic CC sweep")
@@ -86,7 +84,6 @@ def save_table(save_path, headers, rows):
   p[0].axis('off')
   p[0].table(cellText=rows, colLabels=headers, loc='center', cellLoc='center')
   p.savefig(save_path, dpi=300, bbox_inches='tight')
-  print_save(save_path)
 
 def latex_table(headers, rows, caption="", label=""):
   fmt = lambda x: str(x).replace("%", r"\%").replace("_", r"\_")
