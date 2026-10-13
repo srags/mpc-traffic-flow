@@ -95,7 +95,7 @@ def evaluate(scenario: Scenario, params: MetanetParams, vsl: time_space, until_f
   spec = scenario.spec
   steps = spec.time_steps
   assert vsl.shape == (steps, len(scenario.traffic.lanes)), f"Unexpected VSL shape: {vsl.shape}"
-  assert steps == scenario.traffic.inflow.shape[0]
+  assert steps == scenario.traffic.inflow.shape[0], f"Unexpected inflow shape: {scenario.traffic.inflow.shape} vs {steps}"
   return OptimizationResult(vsl=vsl, 
     baseline=simulate(scenario, params, vsl=None, real_data=True, until_ff=until_ff), 
     # baseline=simulate(scenario, params, vsl=None, real_data=True, until_ff=until_ff), 

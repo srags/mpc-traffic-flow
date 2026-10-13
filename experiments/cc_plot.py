@@ -12,7 +12,6 @@ import numpy as np
 
 FIGURE_DIR = REPO_DIR / "figs"
 FIGURE_DIR.mkdir(parents=True, exist_ok=True)
-START_HOUR = 7.5
 
 def main() -> None:
   result = load_one_result("i24", "11_30", calibration=CalRef(CalSource.FIXED_RAMPS, interval = None), study = None)
@@ -46,7 +45,7 @@ def main() -> None:
 
   p = Plotter(1, 1)
   display_vsl = np.where(result.optimization.vsl > v_free, 150, result.optimization.vsl)
-  p[0].plot_time_space(display_vsl, spec, START_HOUR, v_free.max(), "Optimal VSL Speeds", ("v", "VSL speed (km/hr)"), grid=True)
+  p[0].plot_time_space(display_vsl, spec, spec.start_hour, v_free.max(), "Optimal VSL Speeds", ("v", "VSL speed (km/hr)"), grid=True)
   p.savefig(FIGURE_DIR / "optimal_vsl.png")
 
   p = Plotter(1, 4)
@@ -57,8 +56,8 @@ def main() -> None:
      f'METANET Simulation\n(TT: {uncontrolled.total_travel_time:.2f} veh-hr, Delay: {np.round(stats.sim_tt - stats.ff_tt, 2)} veh-hr)',
      f'VSL Control\n(TT: {controlled.total_travel_time:.2f} veh-hr, Delay: {np.round(stats.opt_tt - stats.ff_tt, 2)} veh-hr)'
   )):
-    ax.plot_time_space(mat, spec, START_HOUR, vmax, title=title, colorbar=("h", "Velocity (km/hr)"))
-  p[3].plot_time_space(pct_decrease, spec, START_HOUR, vmin=-100, vmax=100, title="% Decrease in Delay", 
+    ax.plot_time_space(mat, spec, spec.start_hour, vmax, title=title, colorbar=("h", "Velocity (km/hr)"))
+  p[3].plot_time_space(pct_decrease, spec, spec.start_hour, vmin=-100, vmax=100, title="% Decrease in Delay", 
                        colorbar=("h", "% Decrease in Delay"), cmap='inferno', smooth=True)
   p.savefig(FIGURE_DIR / "controlled.png")
 
@@ -68,7 +67,7 @@ def main() -> None:
     batch, col = divmod(k, 4)
     for row, data, label in ((2 * batch, np.concatenate([display_vsl[:t], np.full_like(display_vsl[t:], 150)]), "VSL Speeds"), 
                              (2 * batch + 1, np.concatenate([controlled.velocity[:t], uncontrolled.velocity[t:]]), "Time Space")):
-      p[row, col].plot_time_space(data, result.scenario.spec, START_HOUR, vmax, title=f"{label} {k}")
+      p[row, col].plot_time_space(data, result.scenario.spec, spec.start_hour, vmax, title=f"{label} {k}")
       if 0 < t < len(display_vsl): p[row, col].axvline(t, color="black", linewidth=3)
   p.fig.tight_layout()
   p.savefig(FIGURE_DIR / "cc_reveal_evaluate.png", dpi=150)

@@ -2,6 +2,7 @@
 from dataclasses import dataclass
 import numpy as np
 from ..types import *
+from ..inputs.scenario import Scenario
 
 def mape(observed: np.ndarray | float, predicted: np.ndarray | float):
     return (np.abs((observed - predicted) / observed) * 100).mean()
@@ -91,7 +92,8 @@ class MPCStats:
 
 def run_analysis(run: RunResult) -> MPCStats:
     spec, traffic = run.scenario.spec, run.scenario.traffic
-    gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes) 
+    gt_tt = (spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes) 
+             if len(traffic.density) else float('nan'))
     sim_tt, opt_tt = run.optimization.baseline.total_travel_time, run.optimization.controlled.total_travel_time
     ffv = run.params['v_free']
     rho, vel = run.optimization.baseline.density[:-1], run.optimization.baseline.velocity[:-1]
@@ -99,8 +101,8 @@ def run_analysis(run: RunResult) -> MPCStats:
     if beta.ndim == 2: beta = beta[np.minimum(np.arange(len(rho)), len(beta)-1)]
     return MPCStats(
         gt_tt = gt_tt, sim_tt = sim_tt, opt_tt = opt_tt,
-        sim_window_tt = float(spec.time_step * spec.L * (rho[:len(traffic.velocity)].sum(axis=0) @ traffic.lanes)),
-        sim_error = float(mape(traffic.velocity, vel[:len(traffic.velocity)])),
+        sim_window_tt = float(spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ traffic.lanes)),
+        sim_error = float(mape(traffic.velocity, vel[:spec.time_steps])) if len(traffic.velocity) else float('nan'),
         ff_tt = ff_tts_vkm(rho, vel, traffic.lanes, spec.time_step, spec.L, run.params["v_free"])
                 if LATEST_UPDATE else 
                 get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),        
@@ -108,3 +110,6 @@ def run_analysis(run: RunResult) -> MPCStats:
                 if LATEST_UPDATE else 
                 traffic.inflow.sum() * spec.time_step
     )
+
+def run_analysis_direct(scenario: Scenario, params: MetanetParams, result: OptimizationResult) -> MPCStats:
+    return run_analysis(RunResult(scenario, params, scenario.spec.to_mpc_config(), result))

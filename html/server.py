@@ -30,10 +30,6 @@ from traffic_flow.pipeline import replay  # noqa: E402
 from traffic_flow.config import Study  # noqa: E402
 from traffic_flow.types import RunResult  # noqa: E402
 
-# Wall-clock origin is not saved in the bundle. Other datasets use elapsed time.
-START_HOURS = {"i24": 7.5}
-
-
 def _safe_scenario_path(scenario_id: str) -> Path:
     path = (RESULTS_ROOT / scenario_id).resolve()
     if Path(scenario_id).is_absolute() or RESULTS_ROOT not in path.parents or path.suffix != ".npz":
@@ -164,7 +160,7 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int,
     observed_steps, segments = spec.time_steps, spec.num_segments
     if observed_steps < 1 or segments < 1 or not all(
         np.isfinite(value) and value > 0 for value in (spec.time_step, spec.L)
-    ) or not np.isfinite(spec.start_time):
+    ) or not np.isfinite(spec.start_hour):
         raise ValueError("Invalid scenario geometry or timing")
     if traffic.lanes.shape != (segments,) or not np.isfinite(traffic.lanes).all() or np.any(traffic.lanes <= 0):
         raise ValueError("Invalid saved lane counts")
@@ -206,7 +202,6 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int,
     density_max = max(80.0, float(np.ceil(max(
         result.controlled.density.max(), result.baseline.density.max()
     ) / 10) * 10))
-    start_hour = START_HOURS.get(spec.freeway)
     return {
         "scenario": _scenario_summary(run, path.relative_to(RESULTS_ROOT)),
         **display(result.controlled),
@@ -225,7 +220,7 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int,
             "timeStepSeconds": spec.time_step * 3600,
             "segments": segments,
             "segmentLengthKm": spec.L,
-            "startHour": None if start_hour is None else start_hour + spec.start_time,
+            "startHour": spec.start_hour,
             "lanes": traffic.lanes.tolist(),
         },
         "scales": {"velocity": [0.0, velocity_max], "density": [0.0, density_max]},

@@ -15,7 +15,7 @@ def generate_demand(sim_time, time_step, peak_start=0.25, peak_end=0.75, flow_st
     - Demand array, including the terminal sample (historical convention).
     """
     total_time_steps=int(sim_time/time_step)
-    traffic_demand=np.full(total_time_steps+1,flow_standard, dtype=float)
+    traffic_demand=np.full(total_time_steps,flow_standard, dtype=float)
     peak_start=int(peak_start/time_step)
     peak_end=int(peak_end/time_step)
     traffic_demand[peak_start:peak_end]=flow_peak

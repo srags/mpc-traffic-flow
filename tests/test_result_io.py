@@ -53,11 +53,17 @@ def run_result(tmp_path, monkeypatch):
 
 def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
     original = deepcopy(run_result)
+    assert original.scenario.spec.start_hour == 7.5
     path = save_result(run_result, calibration=CalRef("custom_fit"), study=None, file_name="trial")
     directory = tmp_path / "results/test/test_day/custom_fit"
     assert path == directory / "trial.npz"
     before = path.read_bytes()
     real_load = np.load
+    with real_load(path, allow_pickle=False) as archive:
+        metadata = json.loads(archive["metadata"].item())
+    assert metadata["schema_version"] == 2
+    assert metadata["scenario"]["start_hour"] == 7.5
+    assert "start_time" not in metadata["scenario"]
 
     def read_bundle_only(file, *args, **kwargs):
         assert Path(file) == path, "Loading must not reread observations or calibration"
@@ -91,6 +97,52 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
                 np.testing.assert_array_equal(value, expected, err_msg=key)
     assert path.read_bytes() == before
     assert list(directory.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("offset,expected_hour", [(0., 7.5), (0.25, 7.75)])
+def test_legacy_start_time_loads_as_clock_hour_without_rewriting(run_result, offset, expected_hour):
+    path = save_result(run_result, calibration=CalRef(), study=None)
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {name: archive[name] for name in archive.files}
+    metadata = json.loads(arrays["metadata"].item())
+    metadata["schema_version"] = 1
+    del metadata["scenario"]["start_hour"]
+    metadata["scenario"]["start_time"] = offset
+    arrays["metadata"] = np.asarray(json.dumps(metadata))
+    np.savez_compressed(path, **arrays)
+    before = path.read_bytes()
+
+    restored = load_npz(path)
+    assert restored.scenario.spec == replace(run_result.scenario.spec, start_hour=expected_hour)
+    np.testing.assert_array_equal(restored.optimization.vsl, run_result.optimization.vsl)
+    for phase in ("baseline", "controlled"):
+        actual, expected = getattr(restored.optimization, phase), getattr(run_result.optimization, phase)
+        for name in SimulationResult._fields:
+            np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("version,missing_field,error", [
+    (99, None, "Unsupported run schema version"),
+    (2, "start_hour", "scenario metadata"),
+    (1, "start_time", "scenario metadata"),
+])
+def test_start_hour_schema_rejects_unknown_versions_or_missing_clock(
+    run_result, version, missing_field, error,
+):
+    path = save_result(run_result, calibration=CalRef(), study=None)
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {name: archive[name] for name in archive.files}
+    metadata = json.loads(arrays["metadata"].item())
+    metadata["schema_version"] = version
+    if version == 1:
+        metadata["scenario"]["start_time"] = metadata["scenario"].pop("start_hour") - 7.5
+    if missing_field is not None:
+        del metadata["scenario"][missing_field]
+    arrays["metadata"] = np.asarray(json.dumps(metadata))
+    np.savez_compressed(path, **arrays)
+    with pytest.raises(ValueError, match=error):
+        load_npz(path)
 
 
 def test_failed_save_keeps_previous_bundle(tmp_path, monkeypatch, run_result):
@@ -172,6 +224,15 @@ def viewer(tmp_path, monkeypatch):
     module_spec.loader.exec_module(viewer)
     monkeypatch.setattr(viewer, "RESULTS_ROOT", tmp_path / "results")
     return viewer
+
+
+@pytest.mark.parametrize("dataset,start_hour", [("i24", 7.5), ("i24", 7.75), ("test", 8.25)])
+def test_viewer_uses_saved_clock_hour_without_adding_an_origin(run_result, viewer, dataset, start_hour):
+    spec = replace(run_result.scenario.spec, freeway=dataset, start_hour=start_hour)
+    run = replace(run_result, scenario=replace(run_result.scenario, spec=spec))
+    path = save_result(run, calibration=CalRef(), study=None)
+    payload = viewer.load_scenario(path.relative_to(viewer.RESULTS_ROOT).as_posix())
+    assert payload["metadata"]["startHour"] == start_hour
 
 
 def test_viewer_discovers_named_npzs_and_passes_full_paths(tmp_path, monkeypatch, run_result, viewer):

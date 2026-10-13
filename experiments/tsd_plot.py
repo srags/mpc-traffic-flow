@@ -59,7 +59,7 @@ if __name__ == "__main__":
         head += f"\nDelay = {stats.sim_tt - stats.ff_tt:.0f} veh-hrs"
       elif title == "Optimal control": 
         head += (f"\nDelay = {stats.opt_tt - stats.ff_tt:.0f} veh-hrs, CC = {stats.cc:.0f}\\%".replace("\\%", "%"))
-      im = p[row, col].plot_time_space(tsd, run.scenario.spec, 7.5, vmax, title=head, colorbar=None)
+      im = p[row, col].plot_time_space(tsd, run.scenario.spec, run.scenario.spec.start_hour, vmax, title=head, colorbar=None)
       p[row, col].axhline(CONTROL_ZONE_START_SEGMENT, color="blue", linestyle="--", linewidth=2.5)
       p[row, col].set(ylabel="Distance (km)" if col == 0 else "", xlabel=None)
   p.fig.tight_layout(rect=(0, 0, 0.9, 1), h_pad=1.5, w_pad=0.5)

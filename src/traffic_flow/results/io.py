@@ -22,7 +22,7 @@ def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file
     initialization = settings.pop("initialize_vsl")
 
     metadata = json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "scenario": asdict(result.scenario.spec),
         "config": settings,
         # JSON otherwise loses the distinction between tuples and lists.
@@ -75,12 +75,18 @@ def load_npz(file_path: Path) -> RunResult:
     with np.load(Path(file_path), allow_pickle=False) as archive:
         metadata = json.loads(archive["metadata"].item())
         version = metadata.get("schema_version")
-        if version != 1:
+        if version not in (1, 2):
             raise ValueError(f"Unsupported run schema version: {version}")
 
         spec = metadata["scenario"]
-        if set(spec) != {field.name for field in fields(ScenarioConfig)}:
+        expected = {field.name for field in fields(ScenarioConfig)}
+        if version == 1:
+            expected = (expected - {"start_hour"}) | {"start_time"}
+        if set(spec) != expected:
             raise ValueError("Incomplete or unsupported scenario metadata.")
+        if version == 1:
+            # Legacy start_time was an offset from the 07:30 clock origin.
+            spec["start_hour"] = 7.5 + spec.pop("start_time")
 
         settings = metadata["config"]
         expected = {field.name for field in fields(MPCConfig)} - {"initialize_vsl"}
@@ -154,4 +160,3 @@ def load_one_result(dataset: str, date: str, calibration: CalRef,
     runs = load_results(dataset, date, calibration=calibration, study=study, where=where)
     if len(runs) > 1: print(f"Loaded {len(runs)} results, returning the first.")
     return runs[0]
-

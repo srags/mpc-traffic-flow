@@ -67,6 +67,8 @@ Its `calibration` argument labels the directory; it does not run calibration.
   and timing (`ScenarioConfig`). `load_scenario` infers duration and segment count
   from arrays. Its dataset registry supplies segment length and sample period:
   0.4 km and 10 seconds for I-24. The loader currently uses the full corridor/day.
+  `ScenarioConfig.start_hour` is the wall-clock origin, defaulting to `7.5`
+  (07:30); it does not select a simulation offset or change the input arrays.
 - Inputs are `data/i24/i24_<date>/{rho_hat,q_hat,lane_mapping}.npy`.
   Measurements include two boundary columns. Prepared density is per lane;
   prepared flow is across all lanes. Boundary inflow/density use the existing
@@ -100,8 +102,9 @@ The `v_fd_penalty` field is currently unused by the objective.
 
 Each NPZ contains observations, geometry, parameters, MPC settings, raw policy,
 and both simulation histories/TTTs. Loading needs neither original input files
-nor a solver run. Archives use schema version 1 and `allow_pickle=False`.
-Saving replaces the destination atomically.
+nor a solver run. Archives use schema version 2 and `allow_pickle=False`.
+Version 1 remains readable: its `start_time` offset is converted to
+`start_hour = 7.5 + start_time`. Saving replaces the destination atomically.
 
 ```text
 results/<dataset>/<dataset>_<date>/<calibration.source>/

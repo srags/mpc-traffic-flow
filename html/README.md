@@ -89,8 +89,9 @@ The server reads **only current `results/**/*.npz` bundles** using
 `load_npz(file_path)` in `src/`; it does not read `data/` or `results_bu/`,
 run MPC, or copy/convert results. Simulation is opt-in via **Include drainage**
 and stays entirely in memory. Geometry, lane counts and numerical settings
-come from each bundle. The I-24 wall-clock display retains the 07:30 start;
-datasets without a known clock origin display elapsed time. Reload the page
+come from each bundle. The wall-clock display uses the saved scenario's
+`start_hour` directly (for example, `7.5` means 07:30); the viewer adds no
+dataset-specific time offset. Reload the page
 to discover new runs. Cached payloads are invalidated when a bundle is replaced.
 
 Bundles can live directly in the calibration/study directory, for example

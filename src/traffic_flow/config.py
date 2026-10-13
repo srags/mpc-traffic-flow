@@ -72,7 +72,7 @@ class ScenarioConfig:
     num_segments: int
     time_step: hr
     time_steps: int
-    start_time: hr = 0.0
+    start_hour: hr = 7.5  # Wall-clock origin (07:30), not a simulation offset.
     
     def to_mpc_config(self, **kwargs) -> "MPCConfig":
         return replace(MPCConfig(

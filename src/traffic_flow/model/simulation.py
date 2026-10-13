@@ -111,7 +111,7 @@ class METANET_Simulator:
                     init_traffic_state: MetanetState, vsl_speeds: time_space | None = None):
         self.params = self._base_params
         self.time_steps: int = len(downstream_density)
-        assert self.num_segments == len(init_traffic_state.density)
+        assert self.num_segments == len(init_traffic_state.density), f"Expected {self.num_segments} segments, got {len(init_traffic_state.density)}"
         
         self.downstream_density: time_vec = downstream_density
         self.demand: time_vec = demand
