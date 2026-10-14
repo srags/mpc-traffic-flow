@@ -79,6 +79,54 @@ def vehicles_served(density, velocity, lane_counts, beta, time_step):
     departures = q[:, -1] + (q * beta / (1 - beta)).sum(axis=1)
     return float(departures.sum() * time_step)
 
+def free_flow_departures(day, params, n_steps):
+    """Cumulative arrivals and departures if every vehicle ran at v_free.
+
+    Same arrivals and splits as the simulated runs, on a grid of `n_steps` steps of
+    `time_step`. Each arrival stream (mainline demand, each on-ramp, and the vehicles
+    already in the corridor at t=0) is spread over its free-flow exit times. METANET
+    removes ramp traffic as a sink on a segment's own outflow, so those vehicles cover
+    no distance in the segment they leave at: split first, then charge the traversal
+    time. Returns (arrivals, departures), both cumulative vehicle counts.
+
+    Ported from experiments/capacity_drop_diagnostics.ipynb.
+    """
+    n_seg = day["num_segments"]
+    lanes = np.asarray(day["lane_counts"], dtype=float)
+    t_grid = np.arange(n_steps) * time_step                # hours
+    tau = L / np.asarray(params["v_free"], dtype=float)    # free-flow traversal, hours
+    beta, r = np.asarray(params["beta"], float), np.asarray(params["r"], float)
+    n_dem = day["data_inflow"].shape[0]
+    D = np.zeros(n_steps)
+    A = np.zeros(n_steps)
+
+    def on_grid(per_step_veh):
+        c = np.cumsum(per_step_veh)
+        out = np.full(n_steps, c[-1])
+        out[: len(c)] = c
+        return out
+
+    def add_stream(cum_arrivals, enter_seg, head_start=0.0):
+        nonlocal D, A
+        A = A + cum_arrivals
+        surv, elapsed = 1.0, head_start
+        for j in range(enter_seg, n_seg):
+            if beta[j] > 0:
+                D = D + surv * beta[j] * np.interp(t_grid - elapsed, t_grid, cum_arrivals, left=0.0)
+            surv *= 1 - beta[j]
+            elapsed += tau[j]
+        D = D + surv * np.interp(t_grid - elapsed, t_grid, cum_arrivals, left=0.0)
+
+    add_stream(on_grid(day["data_inflow"] * time_step), 0)
+    n0 = day["init_state"][0] * lanes * L                  # vehicles already in each segment
+    for i in range(n_seg):
+        if r[i] > 1e-6:
+            add_stream(on_grid(np.full(n_dem, r[i] * time_step)), i)
+        if n0[i] > 1e-9:                                   # released from mid-segment
+            add_stream(on_grid(np.r_[n0[i], np.zeros(n_dem - 1)]), i, head_start=-0.5 * tau[i])
+    return A, D
+
+
 def smooth_inflow(inflow, window_size=2):
     kernel    = np.ones(window_size) / window_size
     pad_left  = window_size // 2
@@ -96,10 +144,15 @@ def smooth_inflow(inflow, window_size=2):
 # "Holiday" instead of a day name (Nov 24/25, 2022 = Thanksgiving + the day after).
 HOLIDAY_DATES = {(11, 24), (11, 25)}
 
+def is_holiday(date_str):
+    """'11_24' -> True."""
+    month, day = (int(p) for p in date_str.split('_'))
+    return (month, day) in HOLIDAY_DATES
+
 def format_date_label(date_str, year=2022):
     """'11_30' -> '11/30 (Wed)'; holiday dates -> '11/24 (Holiday)'."""
     month, day = (int(p) for p in date_str.split('_'))
-    if (month, day) in HOLIDAY_DATES:
+    if is_holiday(date_str):
         tag = 'Holiday'
     else:
         tag = datetime.date(year, month, day).strftime('%a')
@@ -191,8 +244,8 @@ def run_one_day(init_state, data_inflow, ds_density_norm, model_params,
     ff_ttt    = ff_tts_vkm(p_sim, v_sim, lane_counts, time_step, L, model_params['v_free'])
     delay     = tts_sim - ff_ttt
     opt_delay = tts_opt - ff_ttt
-    cc        = (delay - opt_delay) / delay * 100
-    cc = np.clip(cc, 0, 100)  # avoid negative CC due to numerical issues
+    cc_unclipped = (delay - opt_delay) / delay * 100
+    cc = np.clip(cc_unclipped, 0, 100)  # avoid negative CC due to numerical issues
     sim_mape_ = mape(v_trimmed, v_sim[0:num_timesteps, :])
 
     gt_tt      = time_step * sum(np.sum(d_trimmed[:, i]) * lane_counts[i] * L
@@ -210,6 +263,7 @@ def run_one_day(init_state, data_inflow, ds_density_norm, model_params,
         'sim_mape':               sim_mape_,
         'tts_mape':                tts_mape_,
         'cc':                      cc,
+        'cc_unclipped':            cc_unclipped,  # negative = policy increased delay
         'uncontrolled_tts':        tts_sim,
         'controlled_tts':          tts_opt,
         'avg_tt_reduced':          avg_tt_reduced_,
@@ -229,6 +283,295 @@ def run_static_for_date(date):
         day['static_params'], day['lane_dict'], day['lane_counts'],
         day['v_trimmed'], day['d_trimmed'], day['num_segments'], static_vsl_path
     )
+
+
+# Calibration bounds from `metanet_param_fit` in src/optimization_utils.py (cold
+# start). Keys follow METANET_Params, so rho_crit is "p_crit". Perturbed
+# parameters are clipped to these so they stay where the model was fit.
+CALIBRATION_BOUNDS = {
+    'tau':      (10 / 3600, 60 / 3600),
+    'K':        (5.0, 60.0),
+    'eta_high': (10.0, 90.0),
+    'p_crit':   (15.0, 95.0),
+    'v_free':   (70.0, 150.0),
+    'a':        (0.5, 5.0),
+}
+
+
+def perturb_params(params, rng, delta=0.10, segment_delta_frac=0.5, clip_params=True):
+    """
+    Randomly perturb the calibrated METANET parameters (those in
+    CALIBRATION_BOUNDS), leaving q_capacity, r, beta and gamma untouched.
+
+    Each parameter is multiplied by (1 + shared) * (1 + local):
+      shared ~ U(-delta, delta), one draw per parameter for the whole corridor
+               (systematic error);
+      local  ~ U(-delta * segment_delta_frac, +delta * segment_delta_frac), one
+               draw per segment (local error).
+    The result is clipped to CALIBRATION_BOUNDS, except that a calibrated value
+    already outside its bound (e.g. a `tau` stored 1e-12 below the lower bound)
+    is allowed to stay where it is, so delta=0 returns the nominal parameters
+    exactly. Pass `clip_params=False` to skip the clipping entirely. Returns a
+    new dict.
+    """
+    segment_delta = delta * segment_delta_frac
+    perturbed = dict(params)
+    for key, (lo, hi) in CALIBRATION_BOUNDS.items():
+        values = np.asarray(params[key], dtype=float)
+        shared = 1 + rng.uniform(-delta, delta)
+        local  = 1 + rng.uniform(-segment_delta, segment_delta, size=values.shape[-1])
+        new_values = values * shared * local
+        if clip_params:
+            new_values = np.clip(new_values, np.minimum(lo, values), np.maximum(hi, values))
+        perturbed[key] = new_values
+    return perturbed
+
+
+def monte_carlo_cc(date, n_samples=50, delta=0.10, segment_delta_frac=0.5,
+                   max_mape=100.0, mape_tolerance=None, clip_cc=False,
+                   clip_params=True, seed=None):
+    """
+    Monte Carlo sensitivity of controllable congestion to parameter error, for
+    one date, holding the VSL policy fixed (no re-optimization).
+
+    The nominal-optimal policy is optimized once on the nominal calibration. For
+    each of `n_samples` perturbed parameter sets (see `perturb_params`), the
+    uncontrolled run, the controlled run and the free-flow baseline are all
+    re-simulated, so CC is recomputed from that model's own TTS_nocontrol,
+    TTS_control and ff_tts. A sample whose sim MAPE is not below `max_mape` (or
+    that produces a non-finite CC) is printed and thrown out.
+
+    Fit screening: if `mape_tolerance` is given, the limit becomes the nominal
+    sim MAPE plus `mape_tolerance` (percentage points) instead of `max_mape`, so
+    only models that fit the data about as well as the nominal one are kept.
+
+    CC is reported unclipped by default, so a negative value means the nominal
+    policy made delay worse under that perturbed model. Pass `clip_cc=True` to
+    clip to [0, 100] as `run_one_day`'s own `cc` does. Pass `clip_params=False`
+    to let perturbed parameters leave the calibration bounds.
+
+    Returns:
+        nominal_cc: CC (%) under the nominal calibration.
+        cc_samples: list of CC (%) for the kept samples (at most `n_samples`).
+    """
+    cc_key = 'cc' if clip_cc else 'cc_unclipped'
+    day = load_day_data(date)
+    vsl_path = f"{RESULTS_ROOT}/i24_{date}/calibration_static/fixed_ramping/optimal_vsl.npy"
+
+    def simulate(params):
+        return run_one_day(
+            day['init_state'], day['data_inflow'], day['ds_density_norm'],
+            params, day['lane_dict'], day['lane_counts'],
+            day['v_trimmed'], day['d_trimmed'], day['num_segments'], vsl_path
+        )
+
+    nominal = simulate(day['static_params'])
+    if nominal is None:
+        raise FileNotFoundError(f"No optimal VSL for {date}: {vsl_path}")
+    nominal_cc = float(nominal[cc_key])
+    mape_limit = max_mape if mape_tolerance is None else nominal['sim_mape'] + mape_tolerance
+
+    rng = np.random.default_rng(seed)
+    cc_samples = []
+    for i in range(n_samples):
+        params  = perturb_params(day['static_params'], rng, delta, segment_delta_frac, clip_params)
+        metrics = simulate(params)
+
+        if not metrics['sim_mape'] < mape_limit:  # also catches NaN
+            print(f"  Sample {i + 1}/{n_samples} thrown out: "
+                  f"sim MAPE {metrics['sim_mape']:.1f}% is not below {mape_limit:.1f}%")
+            continue
+        if not np.isfinite(metrics[cc_key]):
+            print(f"  Sample {i + 1}/{n_samples} thrown out: CC is not finite")
+            continue
+        cc_samples.append(float(metrics[cc_key]))
+
+    print(f"  {date}: kept {len(cc_samples)}/{n_samples} samples (delta={delta:.0%}); "
+          f"nominal CC {nominal_cc:.1f}%")
+    return nominal_cc, cc_samples
+
+
+# Order and Greek-letter titles for the parameter-sensitivity grid.
+SENSITIVITY_PARAMS = ['eta_high', 'K', 'tau', 'p_crit', 'v_free', 'a']
+SENSITIVITY_TITLES = {
+    'eta_high': r'$\eta$',
+    'K':        r'$\kappa$',
+    'tau':      r'$\tau$',
+    'p_crit':   r'$\rho_{\mathrm{cr}}$',
+    'v_free':   r'$v_{\mathrm{free}}$',
+    'a':        r'$a$',
+}
+
+
+def one_at_a_time_cc(date, perturb_pct=None, return_mape=False):
+    """
+    CC as each calibrated parameter is scaled, on its own, by (1 + pct) in every
+    segment while all others stay nominal; the VSL policy is held fixed.
+
+    `perturb_pct` is in fractions (default: -1% to +1% in 0.05% steps, which
+    includes exactly 0). Returns (perturb_pct, results, nominal_cc) where
+    `results[param]` is the array of unclipped CC (%) over `perturb_pct`.
+
+    With `return_mape=True` it returns (perturb_pct, results, nominal_cc,
+    mape_results, nominal_mape), where `mape_results[param]` is the sim MAPE (%)
+    over `perturb_pct` and `nominal_mape` is the nominal run's sim MAPE.
+    """
+    if perturb_pct is None:
+        perturb_pct = np.arange(-20, 21) * 0.0005
+    day = load_day_data(date)
+    vsl_path = f"{RESULTS_ROOT}/i24_{date}/calibration_static/fixed_ramping/optimal_vsl.npy"
+    params = day['static_params']
+
+    def simulate(model_params):
+        return run_one_day(
+            day['init_state'], day['data_inflow'], day['ds_density_norm'],
+            model_params, day['lane_dict'], day['lane_counts'],
+            day['v_trimmed'], day['d_trimmed'], day['num_segments'], vsl_path
+        )
+
+    nominal = simulate(params)
+    if nominal is None:
+        raise FileNotFoundError(f"No optimal VSL for {date}: {vsl_path}")
+
+    results, mape_results = {}, {}
+    for key in SENSITIVITY_PARAMS:
+        base = np.asarray(params[key], dtype=float)
+        ccs, mapes = [], []
+        for pct in perturb_pct:
+            scaled = dict(params)
+            scaled[key] = base * (1 + pct)
+            metrics = simulate(scaled)
+            ccs.append(float(metrics['cc_unclipped']))
+            mapes.append(float(metrics['sim_mape']))
+        results[key] = np.array(ccs)
+        mape_results[key] = np.array(mapes)
+
+    out = (np.asarray(perturb_pct), results, float(nominal['cc_unclipped']))
+    if return_mape:
+        out += (mape_results, float(nominal['sim_mape']))
+    return out
+
+
+def plot_param_sensitivity(perturb_pct, results, nominal_cc, save_path=None,
+                           g_fontsize=20, mape_results=None, nominal_mape=None):
+    """
+    2x3 grid, one panel per parameter: CC (%) against the parameter's perturbation
+    (%), with the nominal CC marked at x=0. Styling follows plotting.py in
+    dyn-traffic-macrosim (serif/Times, Greek titles, dotted reference lines, light
+    grid, x labels on the bottom row and y labels on the outer columns only).
+
+    Pass `mape_results` (param -> sim MAPE (%) array over `perturb_pct`, from
+    `one_at_a_time_cc(..., return_mape=True)`) to also draw the sim MAPE in each
+    panel on a right-hand axis; `nominal_mape` marks its value at x=0.
+    """
+    import matplotlib as mpl
+    from matplotlib.lines import Line2D
+
+    show_mape = mape_results is not None
+    # CC-only plots keep the original orange; with MAPE shown, CC is blue and MAPE orange.
+    CC_COLOR, MAPE_COLOR = ("blue", "orange") if show_mape else ("orange", None)
+    tick_fs, label_fs, title_fs = g_fontsize, g_fontsize + 1, g_fontsize + 8
+    perturb_x = np.asarray(perturb_pct) * 100
+    n_keys = len(SENSITIVITY_PARAMS)
+    nrows, ncols = 2, 3
+
+    def shared_limits(arrays, nominal):
+        lo = min(np.nanmin(a) for a in arrays)
+        hi = max(np.nanmax(a) for a in arrays)
+        if nominal is not None:
+            lo, hi = min(lo, nominal), max(hi, nominal)
+        pad = 0.05 * (hi - lo) if hi > lo else 1.0
+        return lo - pad, hi + pad
+
+    # Shared y-limits so panels are directly comparable.
+    cc_lim = shared_limits(results.values(), nominal_cc)
+    if show_mape:
+        mape_lim = shared_limits(mape_results.values(), nominal_mape)
+
+    with mpl.rc_context({
+        "font.family": "serif",
+        "font.serif": "Times New Roman",
+        "mathtext.fontset": "cm",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "axes.unicode_minus": False,
+        "text.usetex": False,
+    }):
+        fig, axes = plt.subplots(nrows, ncols, figsize=(4 * ncols, 3 * nrows))
+        axes = np.atleast_1d(axes).ravel()
+
+        for plot_idx, (ax, key) in enumerate(zip(axes[:n_keys], SENSITIVITY_PARAMS)):
+            is_bottom_row = plot_idx // ncols == nrows - 1
+            is_left_col   = plot_idx % ncols == 0
+            is_right_col  = plot_idx % ncols == ncols - 1
+
+            ax.set_facecolor('white')
+            ax.plot(perturb_x, results[key], color=CC_COLOR, linewidth=2)
+            ax.plot(0, nominal_cc, marker='o', color='black', markersize=6, zorder=3)
+
+            ax.axvline(0, color='black', linewidth=0.8, linestyle=':', alpha=0.7)
+            ax.axhline(nominal_cc, color='black', linewidth=0.8, linestyle=':', alpha=0.7)
+            ax.grid(True, color='lightgrey', linewidth=0.5, linestyle='-', alpha=0.8)
+            ax.set_axisbelow(True)
+
+            ax.set_title(SENSITIVITY_TITLES[key], fontsize=title_fs, fontweight='normal', pad=6)
+            ax.set_xlim(perturb_x[0], perturb_x[-1])
+            ax.set_ylim(*cc_lim)
+            ax.tick_params(labelsize=tick_fs)
+
+            if is_bottom_row:
+                ax.set_xlabel('Perturbation (%)', fontsize=label_fs)
+            else:
+                ax.tick_params(axis='x', which='both', labelbottom=False, bottom=False)
+
+            if is_left_col:
+                ax.set_ylabel('CC (%)', fontsize=label_fs,
+                              color=CC_COLOR if show_mape else 'black')
+            else:
+                ax.tick_params(axis='y', which='both', labelleft=False)
+            if show_mape:
+                ax.tick_params(axis='y', labelcolor=CC_COLOR)
+
+            for spine in ax.spines.values():
+                spine.set_edgecolor('#cccccc')
+                spine.set_linewidth(0.8)
+
+            if show_mape:
+                ax2 = ax.twinx()
+                # Draw the CC axes above the MAPE axes so CC is plotted on top.
+                ax.set_zorder(ax2.get_zorder() + 1)
+                ax.patch.set_visible(False)
+                ax2.plot(perturb_x, mape_results[key], color=MAPE_COLOR, linewidth=2)
+                if nominal_mape is not None:
+                    ax2.plot(0, nominal_mape, marker='o', color=MAPE_COLOR,
+                             markeredgecolor='black', markersize=6, zorder=3)
+                ax2.set_ylim(*mape_lim)
+                ax2.tick_params(axis='y', labelsize=tick_fs, labelcolor=MAPE_COLOR)
+                for spine in ax2.spines.values():
+                    spine.set_edgecolor('#cccccc')
+                    spine.set_linewidth(0.8)
+                if is_right_col:
+                    ax2.set_ylabel('Sim MAPE (%)', fontsize=label_fs, color=MAPE_COLOR)
+                else:
+                    ax2.tick_params(axis='y', which='both', labelright=False, right=False)
+
+        for ax in axes[n_keys:]:
+            ax.set_visible(False)
+
+        if show_mape:
+            fig.legend(
+                handles=[Line2D([0], [0], color=CC_COLOR, linewidth=2, label='CC'),
+                         Line2D([0], [0], color=MAPE_COLOR, linewidth=2, label='Sim MAPE')],
+                loc='lower center', ncol=2, bbox_to_anchor=(0.5, 1.0),
+                frameon=True, fontsize=label_fs,
+            )
+
+        if save_path:
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
+            print(f"Saved plot to {save_path}")
+        plt.show()
+    return fig
 
 
 def run_static_and_dynamic_for_date(date):
@@ -483,35 +826,34 @@ def plot_static_dynamic_table(results, save_path=None):
     mpl.rcParams['font.family'] = original_font
 
 
-# Publication-style headers for static_results_to_latex: (label, unit).
-# unit=None renders as a single line; otherwise the unit sits on its own
-# line below the label via \shortstack. Falls back to the STATIC_COLUMNS
-# header (no unit) if a column has no override here.
+# Publication-style headers for static_results_to_latex: (line 1, line 2).
+# line 2 = None renders a single line; otherwise both lines are stacked via
+# \shortstack. Falls back to the STATIC_COLUMNS header if a column has no
+# override here.
 LATEX_HEADERS = {
-    'date':                    ('Date',                      None),
-    'sim_mape':                ('Simulation Error',          '(MAPE)'),
-    'tts_mape':                ('TTS Error',                  '(MAPE)'),
-    'cc':                      ('Controllable Congestion',    '(\\%)'),
-    'uncontrolled_tts':        ('Uncontrolled TTT',           '(veh-hrs)'),
-    'controlled_tts':          ('Controlled TTT',             '(veh-hrs)'),
-    'avg_tt_reduced':          ('Avg.\\ TT Reduced / Veh',    '(min)'),
-    'avg_delay_uncontrolled':  ('Avg.\\ Uncontrolled Delay / Veh', '(min)'),
-    'avg_delay_controlled':    ('Avg.\\ Controlled Delay / Veh',   '(min)'),
+    'date':                    ('Date',               None),
+    'sim_mape':                ('Simulation Error',   '(\\%)'),
+    'tts_mape':                ('TTS Error',          '(\\%)'),
+    'cc':                      ('Controllable',       'Congestion (\\%)'),
+    'uncontrolled_tts':        ('Uncontrolled',       'TTS (veh-hrs)'),
+    'controlled_tts':          ('Controlled',         'TTS (veh-hrs)'),
+    'avg_tt_reduced':          ('TT Reduced',         'per Veh (min)'),
+    'avg_delay_uncontrolled':  ('Uncontrolled Delay', 'per Veh (min)'),
+    'avg_delay_controlled':    ('Controlled Delay',   'per Veh (min)'),
 }
 
 
 def _latex_header_cell(col_key):
-    label, unit = LATEX_HEADERS.get(col_key, (STATIC_COLUMNS[col_key][0], None))
-    if unit:
-        return rf"\textbf{{\shortstack{{{label} \\ {unit}}}}}"
-    return rf"\textbf{{{label}}}"
+    line1, line2 = LATEX_HEADERS.get(col_key, (STATIC_COLUMNS[col_key][0], None))
+    if line2:
+        return rf"\textbf{{\shortstack{{{line1} \\ {line2}}}}}"
+    return rf"\textbf{{{line1}}}"
 
 
-# Value-formatter overrides for static_results_to_latex only (the PNG table
-# via plot_static_table keeps STATIC_COLUMNS' 2-decimal formatting).
+# Value-formatter overrides for static_results_to_latex only; every other
+# column uses STATIC_COLUMNS' formatter (same rounding as the PNG table).
 LATEX_VALUE_FORMATTERS = {
-    'uncontrolled_tts': lambda r: f"{round(r['uncontrolled_tts'])}",
-    'controlled_tts':   lambda r: f"{round(r['controlled_tts'])}",
+    'cc': lambda r: rf"\textbf{{{r['cc']:.0f}%}}",
 }
 
 
@@ -522,8 +864,8 @@ def static_results_to_latex(results, columns=None,
     Render `results` (from run_static_analysis) as a booktabs LaTeX table
     string. `columns` picks which STATIC_COLUMNS fields appear (defaults to
     ['date', 'sim_mape', 'cc']); the Date column is left-aligned, all others
-    centered. Column headers with a unit (e.g. "(min)") render it on its own
-    line below the label.
+    centered. Headers are two-line stacks (see LATEX_HEADERS), CC values are
+    bold, and a \\midrule separates runs of holiday and non-holiday dates.
     """
     if columns is None:
         columns = ['date', 'sim_mape', 'cc']
@@ -544,7 +886,13 @@ def static_results_to_latex(results, columns=None,
         " & ".join(header_cells) + r" \\",
         r"\midrule",
     ]
+    prev_holiday = None
     for r in results:
+        holiday = is_holiday(r['date'])
+        if prev_holiday is not None and holiday != prev_holiday:
+            lines.append(r"\midrule")
+        prev_holiday = holiday
+
         row_vals = [
             LATEX_VALUE_FORMATTERS.get(c, STATIC_COLUMNS[c][1])(r).replace('%', r'\%')
             for c in columns
@@ -567,7 +915,7 @@ def run_static_analysis(dates, columns=None, save_path=None,
     # Resolved here rather than in the signature so the defaults follow
     # FIGS_ROOT instead of the caller's working directory.
     save_path = fig("i24_cc_table.png") if save_path is None else save_path
-    bar_chart_save_path = (fig("i24_avg_delay_bar.png")
+    bar_chart_save_path = (fig("i24_avg_delay_bar.pdf")
                            if bar_chart_save_path is None else bar_chart_save_path)
 
     results = []

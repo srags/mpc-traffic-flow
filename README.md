@@ -47,7 +47,7 @@ To check that the environment is working, run the following command:
 python experiments/I_24_tsd_plotting.py
 ```
 
-It should plot Figure 6 to `figs/i24_tsd.png`. It needs no path edits and works from any directory.
+It should plot Figure 6 to `figs/i24_tsd.pdf`. It needs no path edits and works from any directory.
 
 ---
 
@@ -114,7 +114,7 @@ with helpers that build the paths this project actually uses:
 | `i24_results("11_30")` | `<results>/i24/i24_11_30/calibration_static/fixed_ramping` |
 | `i24_results("11_30", "speed_lb")` | the min-speed-limit sweep directory |
 | `synthetic_results("demand")` | `<results>/synthetic_10km/demand` |
-| `fig("i24_tsd.png")` | a path under `figs/`, creating the directory if needed |
+| `fig("i24_tsd.pdf")` | a path under `figs/`, creating the directory if needed |
 | `ensure_dir(p)` | `p`, created if missing — safe to wrap any output path |
 | `i24_dates()` | every date directory actually present |
 
@@ -218,11 +218,11 @@ All read the saved VSL policies and run them to determine the controllable conge
 
 | Command | Produces |
 |---|---|
-| `python experiments/I_24_table_plotting.py` | `figs/i24_cc_table.png`, `.tex`, `figs/i24_avg_delay_bar.png` which summarizes statistics across all 10 days of I-24. |
-| `python experiments/I_24_tsd_plotting.py` | `figs/i24_tsd.png` plot time-space diagrams, 11/28 vs 12/02. |
-| `python experiments/I_24_constraint_plotting.py` | `figs/i24_constraints.png` (2×2 constraint panel), `figs/i24_safety_heatmap.png`. |
-| `python experiments/synthetic_demand_tsd.py` | `figs/synthetic_demand_tsd.png`. |
-| `python experiments/synthetic_cc_demand.py` | `figs/synthetic_cc_demand.png` — CC vs peak demand. |
+| `python experiments/I_24_table_plotting.py` | `figs/i24_cc_table.png`, `.tex`, `figs/i24_avg_delay_bar.pdf` which summarizes statistics across all 10 days of I-24. |
+| `python experiments/I_24_tsd_plotting.py` | `figs/i24_tsd.pdf` plot time-space diagrams, 11/28 vs 12/02. |
+| `python experiments/I_24_constraint_plotting.py` | `figs/i24_constraints.pdf` (2×2 constraint panel), `figs/i24_safety_heatmap.pdf`. |
+| `python experiments/synthetic_demand_tsd.py` | `figs/synthetic_demand_tsd.pdf`. |
+| `python experiments/synthetic_cc_demand.py` | `figs/synthetic_cc_demand.pdf` — CC vs peak demand. |
 
 ---
 

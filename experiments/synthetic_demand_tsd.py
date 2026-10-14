@@ -9,7 +9,7 @@ Run from anywhere:
 
     python experiments/synthetic_demand_tsd.py
 
-Saves to figs/synthetic_demand_tsd.png and prints the delay / CC figures for
+Saves to figs/synthetic_demand_tsd.pdf and prints the delay / CC figures for
 each panel so the caption can be written directly from the output.
 """
 
@@ -28,7 +28,7 @@ from param_loader import METANET_Params          # noqa: E402
 from traffic_sim import run_metanet_sim          # noqa: E402
 
 DEMAND_DIR = synthetic_results("demand")
-SAVE_PATH = fig("synthetic_demand_tsd.png")
+SAVE_PATH = fig("synthetic_demand_tsd.pdf")
 
 # ── Scenario definition (mirrors generate_demand_synthetic.__main__) ─────────
 SIM_TIME = 2.0                                    # hours

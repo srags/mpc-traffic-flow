@@ -38,7 +38,7 @@ if __name__ == "__main__":
                             "controlled_tts", "cc", "avg_tt_reduced"]
     static_results = run_static_analysis(STATIC_DATES, columns=STATIC_TABLE_COLUMNS,
                                          save_path=fig("i24_cc_table.png"),
-                                         bar_chart_save_path=fig("i24_cc_bar_chart.png"))
+                                         bar_chart_save_path=fig("i24_cc_bar_chart.pdf"))
 
     latex_table = static_results_to_latex(static_results, columns=STATIC_TABLE_COLUMNS)
     tex_path = fig("i24_cc_table.tex")

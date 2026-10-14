@@ -41,8 +41,8 @@ from traffic_sim import run_metanet_sim      # noqa: E402
 
 DATE = "11_30"
 SWEEP_ROOT = i24_results(DATE)
-SAVE_PATH = fig("i24_constraints.png")
-HEATMAP_SAVE_PATH = fig("i24_safety_heatmap.png")
+SAVE_PATH = fig("i24_constraints.pdf")
+HEATMAP_SAVE_PATH = fig("i24_safety_heatmap.pdf")
 
 # Fixed value of the *other* bound in each smoothness slice, in km/hr. Chosen
 # for coverage: these rows/columns of the grid have the most successful runs.
