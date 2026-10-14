@@ -5,18 +5,24 @@ Literal aliases retain type checking for callers that still use string values.
 Dates, paths and numerical tuning values deliberately remain open-ended.
 """
 
-from dataclasses import dataclass, replace
-from enum import Enum
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, TypeAlias, TypedDict
-
+from typing import TypeAlias, TypedDict
 import numpy as np
+from enum import Enum
 
-from .types import hr, km, space_vec, time_vec, time_space
+hr = float
+km = float
+veh_hr = float
+
+time_space = np.ndarray[tuple[int, int], np.dtype[np.float64]]
+time_vec = np.ndarray[tuple[int], np.dtype[np.float64]]
+space_vec = np.ndarray[tuple[int], np.dtype[np.float64]]
+space_mask = np.ndarray[tuple[int], np.dtype[np.bool_]]
 
 class _StringChoice(str, Enum):
-    # Python 3.10 equivalent of StrEnum's string/path formatting behavior.
-    def __str__(self) -> str: return self.value
+  # Python 3.10 equivalent of StrEnum's string/path formatting behavior.
+  def __str__(self) -> str: return self.value
 
 class LossMode(_StringChoice):
     """How the losses across perturbed calibration scenarios are combined."""
@@ -38,49 +44,11 @@ class Study(_StringChoice):
     HOLD_LENGTH = "hold_length"
     SAFETY_SWEEP = "safety_sweep"
 
-class CalSource(_StringChoice):
-    """Known on-disk layouts; selecting one does not run calibration.
-
-    Custom source strings remain supported. DYNAMIC additionally
-    requires CalRef.interval.
-    """
-    FIXED_RAMPS = "calibration_static/fixed_ramping"
-    VARYING_RAMPS = "calibration_static/time_varying_ramping"
-    DYNAMIC = "calibration_dynamic"
-
-LossChoice: TypeAlias = LossMode | Literal["minmax", "mean", "mean_plus_worst"]
-StudyChoice: TypeAlias = Study | Literal["", "speed_lb", "hold_length", "safety_sweep"] | None
-InitValue: TypeAlias = float | InitMode | Literal["adaptive"]
+LossChoice: TypeAlias = LossMode
+StudyChoice: TypeAlias = Study | None
+InitValue: TypeAlias = float | InitMode
 # Tuples are preferred for configurations; lists remain supported for old callers.
 InitChoices: TypeAlias = InitValue | tuple[InitValue, ...] | list[InitValue] | None
-
-@dataclass(frozen=True)
-class CalRef:
-    """Which saved calibration to load—not settings for fitting a new one."""
-    source: CalSource | str = CalSource.FIXED_RAMPS
-    interval: int | None = None
-
-@dataclass(frozen=True)
-class ScenarioConfig:
-    """Resolved dataset identity, geometry and timing, without calibration settings.
-
-    Time values are hours; L is segment length in km.
-    """
-    freeway: str
-    date: str
-    L: km
-    num_segments: int
-    time_step: hr
-    time_steps: int
-    start_hour: hr = 7.5  # Wall-clock origin (07:30), not a simulation offset.
-    
-    def to_mpc_config(self, **kwargs) -> "MPCConfig":
-        return replace(MPCConfig(
-            pred_horizon=45, control_horizon=5, hold_length=1,
-            speed_lb=0, v_fd_penalty=1e14,
-            control_zone=tuple(range(2, self.num_segments)),
-            init_fixed=150.0, verbose=True, tee=False,
-        ), **kwargs)
 
 @dataclass(frozen=True)
 class SyntheticConfig:
@@ -154,10 +122,6 @@ class RobustOptConfig:
     objective_mode: LossChoice = LossMode.MINMAX
     lam_worst: float = 0.2   
 
-class RampMapping(TypedDict):
-    on_ramps: np.ndarray
-    off_ramps: np.ndarray
-
 class CalibrationInitialGuess(TypedDict, total=False):
     eta_high: space_vec
     tau: space_vec
@@ -172,7 +136,6 @@ class CalibrationInitialGuess(TypedDict, total=False):
 class CalibrationConfig:
     """Fit options. robust_opt=None selects the existing nominal fitter."""
     include_ramping: bool = True
-    ramp_mapping: RampMapping | None = None
     constraint_tol: float = 1e-12
     robust_opt: RobustOptConfig | None = None
 

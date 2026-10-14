@@ -14,8 +14,8 @@ import numpy as np
 from ..config import SyntheticConfig
 from ..inputs.generation import generate_demand
 from ..model.parameters import default_metanet_params
-from ..model.simulation import METANET_Simulator
-from ..types import MetanetParams, MetanetState, OptimizationResult, SimulationResult
+from ..model.simulation import METANET_Simulator, MetanetState
+from ..types import MetanetParams, OptimizationResult, SimulationResult
 from .analysis import get_ff_tts
 from ..console import colored
 
@@ -93,7 +93,7 @@ def load_synthetic_results(
         )
         simulator = METANET_Simulator(
             T=config.time_step, l=config.L, params=params,
-            lanes=dict(enumerate(config.lanes)), real_data=False,
+            lanes=np.asarray(config.lanes, dtype=float), real_data=False,
         )
         # Historical uncontrolled replay receives the terminal demand sample;
         # controlled replay receives T samples. Neither needs forecast padding.

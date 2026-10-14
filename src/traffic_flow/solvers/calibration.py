@@ -194,14 +194,16 @@ def metanet_param_fit(
     v_hat: time_space,
     rho_hat: time_space,
     T: hr, l: km,
-    lane_mapping: dict[str, float],
+    lanes: space_vec,
     initial_traffic_state: space_vec,
     downstream_density: space_vec,
+    *,
+    on_ramps: space_mask,
+    off_ramps: space_mask,
     include_ramping=True,
     constraint_tol=1e-12,
     warmstart=None,
     prev_param_path=None,
-    ramp_mapping=None,
     time_varying_ramps=False,
     fixed_inflows=None,
     use_A_regularizer=False,
@@ -231,7 +233,7 @@ def metanet_param_fit(
     model.l = ScalarParam(initialize=l)
 
     # Number of lanes (per calibrated segment)
-    model.n_lanes = IndexedParam(model.i, initialize=lane_mapping)
+    model.n_lanes = IndexedParam(model.i, initialize=lanes)
 
     # Parameters to estimate
     if warmstart is not None:
@@ -265,26 +267,20 @@ def metanet_param_fit(
         model.beta = IndexedVar(model.i, bounds=(1e-3, 0.6), initialize=1e-3)
         model.r_inflow = IndexedVar(model.t, model.i, bounds=(1e-3, 2000), initialize=1e-3)
         
-        if ramp_mapping is not None:
-          assert("on_ramps" in ramp_mapping and "off_ramps" in ramp_mapping), \
-          "If include_ramping is True, ramp_mapping must contain 'on_ramps' and 'off_ramps' keys."
+        for i in range(num_segments):
+          if not on_ramps[i]:
+            for t in range(num_timesteps):
+              model.r_inflow[t, i].set_value(1e-3)
+              model.r_inflow[t, i].fix()
 
-          on_ramps = ramp_mapping["on_ramps"]
-          off_ramps = ramp_mapping["off_ramps"]
-          for i in range(num_segments):
-            if not on_ramps[i]:
-              for t in range(num_timesteps):
-                model.r_inflow[t, i].set_value(1e-3)
-                model.r_inflow[t, i].fix()
+          if not off_ramps[i]:
+            if tee: print(f"seg {i} is not an off-ramp, fixing beta to 1e-3")
+            model.beta[i].set_value(1e-3)
+            model.beta[i].fix()
 
-            if not off_ramps[i]:
-              if tee: print(f"seg {i} is not an off-ramp, fixing beta to 1e-3")
-              model.beta[i].set_value(1e-3)
-              model.beta[i].fix()
-
-            if fixed_inflows is not None and i in fixed_inflows:
-              for t in range(num_timesteps):
-                model.r_inflow[t, i].fix(fixed_inflows[i][t])
+          if fixed_inflows is not None and i in fixed_inflows:
+            for t in range(num_timesteps):
+              model.r_inflow[t, i].fix(fixed_inflows[i][t])
 
         if warmstart is not None:
           for i in range(num_segments):
@@ -295,21 +291,15 @@ def metanet_param_fit(
         model.beta = IndexedVar(model.i, bounds=(1e-3, 0.9), initialize=1e-3)
         model.r_inflow = IndexedVar(model.i, bounds=(1e-3, 2000), initialize=1e-3)
         
-        if ramp_mapping is not None:
-          assert("on_ramps" in ramp_mapping and "off_ramps" in ramp_mapping), \
-            "If include_ramping is True, ramp_mapping must contain 'on_ramps' and 'off_ramps' keys."
+        for i in range(num_segments):
+          if not on_ramps[i]:
+            model.r_inflow[i].set_value(1e-3)
+            model.r_inflow[i].fix()
 
-          on_ramps = ramp_mapping["on_ramps"]
-          off_ramps = ramp_mapping["off_ramps"]
-          for i in range(num_segments):
-            if not on_ramps[i]:
-              model.r_inflow[i].set_value(1e-3)
-              model.r_inflow[i].fix()
-
-            if not off_ramps[i]:
-              if tee: print(f"seg {i} is not an off-ramp, fixing beta to 1e-3")
-              model.beta[i].set_value(1e-3)
-              model.beta[i].fix()
+          if not off_ramps[i]:
+            if tee: print(f"seg {i} is not an off-ramp, fixing beta to 1e-3")
+            model.beta[i].set_value(1e-3)
+            model.beta[i].fix()
 
         if warmstart is not None:
           for i in range(num_segments):
@@ -564,9 +554,12 @@ def metanet_param_fit_robust(
     v_hat,
     rho_hat,
     T, l,
-    lane_mapping,
+    lanes: space_vec,
     initial_traffic_state,
     downstream_density,
+    *,
+    on_ramps: space_mask,
+    off_ramps: space_mask,
     include_ramping=True,
     constraint_tol=1e-12,
     # robust-specific
@@ -576,7 +569,6 @@ def metanet_param_fit_robust(
     objective_mode: LossChoice = LossMode.MINMAX,
     lam_worst=0.2,              # only used for "mean_plus_worst"
     warmstart=None,
-    ramp_mapping=None,
     prev_param_path=None
 ):
     """
@@ -627,7 +619,7 @@ def metanet_param_fit_robust(
     m.l = ScalarParam(initialize=float(l))
 
     # Number of lanes (per segment) — matches your pattern
-    m.n_lanes = IndexedParam(m.i, initialize=lane_mapping)
+    m.n_lanes = IndexedParam(m.i, initialize=lanes)
     
     # Shared parameters to estimate (same as your metanet_param_fit)
     if warmstart is not None:
@@ -664,9 +656,6 @@ def metanet_param_fit_robust(
     # m.a = Var(m.i, bounds=(0.5, 5), initialize=1.4)
 
     if include_ramping:
-      assert ramp_mapping is not None
-      assert "on_ramps" in ramp_mapping and "off_ramps" in ramp_mapping, "If include_ramping is True, ramp_mapping must contain 'on_ramps' and 'off_ramps' keys."
-
       m.beta = IndexedVar(m.i, bounds=(1e-3, 0.9), initialize=1e-3)
       m.r_inflow = IndexedVar(m.i, bounds=(0, 2000), initialize=1e-3)
 
@@ -676,10 +665,10 @@ def metanet_param_fit_robust(
           m.r_inflow[i] = params["r"][i]
 
       for i in m.i:
-        if not ramp_mapping["on_ramps"][i]:
+        if not on_ramps[i]:
           m.r_inflow[i] = 0.0
           m.r_inflow[i].fix()
-        if not ramp_mapping["off_ramps"][i]:
+        if not off_ramps[i]:
           m.beta[i] = 1e-3
           m.beta[i].fix()
     else:
@@ -847,7 +836,7 @@ def metanet_param_fit_robust(
     return m, solver_results
 
 
-def run_calibration(traffic: TrafficData, T: hr, l: km, *, config: CalibrationConfig) -> MetanetParams:
+def run_calibration(traffic: TrafficData, spec: ScenarioSpec, *, config: CalibrationConfig) -> MetanetParams:
     """Fit METANET parameters from prepared traffic observations.
 
     Observations use per-lane density and total flow across lanes.
@@ -858,11 +847,10 @@ def run_calibration(traffic: TrafficData, T: hr, l: km, *, config: CalibrationCo
     # Existing fitters expect total density, not per-lane density.
     inputs = (
       traffic.velocity,
-      traffic.density * traffic.lanes,
-      T, l,
-      {i: float(count) for i, count in enumerate(traffic.lanes)},
+      traffic.density * spec.lanes,
+      spec.time_step, spec.L, spec.lanes,
       traffic.inflow,
-      traffic.downstream_density * traffic.lanes[-1],
+      traffic.downstream_density * spec.lanes[-1],
     )
 
     common_options = dict(
@@ -870,7 +858,8 @@ def run_calibration(traffic: TrafficData, T: hr, l: km, *, config: CalibrationCo
       constraint_tol=config.constraint_tol,
       warmstart=config.warmstart,
       prev_param_path=config.prev_param_path,
-      ramp_mapping=config.ramp_mapping,
+      on_ramps=spec.on_ramps,
+      off_ramps=spec.off_ramps,
     )
 
     if config.warmstart is not None:

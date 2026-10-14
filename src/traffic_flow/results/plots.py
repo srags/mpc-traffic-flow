@@ -3,14 +3,11 @@ import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from matplotlib.cm import ScalarMappable
 from matplotlib.colorbar import Colorbar
-from matplotlib.colors import Normalize
 from matplotlib.projections import register_projection
 
-from traffic_flow.config import ScenarioConfig
-from traffic_flow.console import print_save
-
+from ..console import print_save
 from ..model.simulation import *
-from ..types import time_space
+from ..types import time_space, ScenarioSpec
 from typing import Literal
 
 preset_figsizes = {
@@ -30,7 +27,7 @@ class PlotterAxes(Axes):
   def parent(self, p: "Plotter"):
     self._parent = p
     return self
-  def plot_time_space(self, data: time_space, spec: ScenarioConfig, start_time: hr, vmax: float, title: str = "",
+  def plot_time_space(self, data: time_space, spec: ScenarioSpec, vmax: float, title: str = "",
                     colorbar: None | tuple[Literal["h", "v"], str] = None, grid: bool = False,
                     cmap: str = 'RdYlGn', vmin = 0., smooth: bool = False, **kwargs) -> ScalarMappable:
     """Plot a time-space diagram of the given data."""
@@ -39,7 +36,7 @@ class PlotterAxes(Axes):
     time_steps, num_segments = data.shape
     minutes = np.arange(0, time_steps + 1, 60)
     self.set(title=title, xlabel='Time', ylabel='Distance (km)',
-      xticks=np.arange(0, time_steps + 1, 60), xticklabels=[format_time(start_time, m * spec.time_step * 60) for m in minutes],
+      xticks=np.arange(0, time_steps + 1, 60), xticklabels=[format_time(spec.start_hour, m * spec.time_step * 60) for m in minutes],
       yticks=np.arange(0, num_segments, 1/spec.L), yticklabels=np.round(np.arange(0, num_segments * spec.L, 1), 2))
     if colorbar is not None:
       self._parent.fig.colorbar(image, ax=self, label=colorbar[1],
@@ -84,20 +81,3 @@ class Plotter:
     # plt.tight_layout()
     self.fig.savefig(*args, **kwargs)
     print_save(args[0])
-
-def plot_velocity_comparison(observed: time_space, simulated: time_space) -> Plotter:
-    """Compare aligned (time, segment) velocity arrays in km/hr."""
-    if observed.ndim != 2 or simulated.ndim != 2:
-        raise ValueError("Both arrays must have shape (time, segment)")
-    if observed.shape != simulated.shape or observed.size == 0:
-        raise ValueError("Arrays must have matching, nonempty shapes")
-
-    norm = Normalize(vmin=float(min(observed.min(), simulated.min())), vmax=float(max(observed.max(), simulated.max())))
-
-    p = Plotter(1, 2)
-    for i, (values, title) in enumerate([(observed, "Observed velocity"), (simulated, "Simulated velocity")]):
-        image = p[i].imshow(values.T, aspect="auto", origin="lower", cmap="RdYlGn", interpolation="none", norm=norm)
-        p[i].set(title=title, xlabel="Time step", ylabel="Segment index")
-
-    p.colorbar(image, axes=[0, 1], label="Velocity (km/hr)")
-    return p

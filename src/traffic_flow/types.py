@@ -1,27 +1,67 @@
-import numpy as np
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, NamedTuple, TypedDict
+from enum import Enum
 
-if TYPE_CHECKING:
-  from .config import MPCConfig
-  from .inputs.scenario import Scenario
+import numpy as np
+from dataclasses import dataclass, replace
+from typing import NamedTuple, TypedDict
+from .config import MPCConfig
 
 LATEST_UPDATE = False # SWITCH TO MATCH NEWEST MAIN
 
 hr = float
 km = float
 veh_hr = float
-lane_map = dict[int, float]
 
 time_space = np.ndarray[tuple[int, int], np.dtype[np.float64]]
 time_vec = np.ndarray[tuple[int], np.dtype[np.float64]]
 space_vec = np.ndarray[tuple[int], np.dtype[np.float64]]
+space_mask = np.ndarray[tuple[int], np.dtype[np.bool_]]
 
-class MetanetState(NamedTuple):
-  density: space_vec
-  velocity: space_vec
-  demand: float
-  queue: float
+@dataclass(frozen=True)
+class ScenarioSpec:
+  """Resolved dataset identity, geometry and timing, without calibration settings."""
+  freeway: str;         date: str
+  L: km;                num_segments: int
+  time_step: hr;        time_steps: int
+  on_ramps: space_mask; off_ramps: space_mask
+  lanes: space_vec;     start_hour: hr = 7.5
+
+  def to_mpc_config(self, **kwargs) -> "MPCConfig":
+    return replace(MPCConfig(
+      pred_horizon=45, control_horizon=5, hold_length=1,
+      speed_lb=0, v_fd_penalty=1e14,
+      control_zone=tuple(range(2, self.num_segments)),
+      init_fixed=150.0, verbose=True, tee=False,
+    ), **kwargs)
+
+class TrafficData(NamedTuple):
+  """Prepared observations and boundary inputs; geometry belongs to the spec."""
+  density: time_space          # veh/km/lane
+  flow: time_space             # veh/hr, across all lanes
+  velocity: time_space         # km/hr
+  inflow: time_vec             # veh/hr
+  downstream_density: time_vec # veh/km/lane
+  initial_density: space_vec
+  initial_velocity: space_vec
+
+@dataclass(frozen=True)
+class Scenario:
+  spec: ScenarioSpec
+  traffic: TrafficData
+
+class _StringChoice(str, Enum):
+  # Python 3.10 equivalent of StrEnum's string/path formatting behavior.
+  def __str__(self) -> str: return self.value
+    
+class CalSource(_StringChoice):
+  FIXED_RAMPS = "calibration_static/fixed_ramping"
+  VARYING_RAMPS = "calibration_static/time_varying_ramping"
+  DYNAMIC = "calibration_dynamic"
+
+@dataclass(frozen=True)
+class CalRef:
+  """Which saved calibration to load—not settings for fitting a new one."""
+  source: CalSource | str = CalSource.FIXED_RAMPS
+  interval: int | None = None
 
 class MetanetParams(TypedDict):
   tau: space_vec | time_space
@@ -34,25 +74,6 @@ class MetanetParams(TypedDict):
   r: space_vec | time_space
   beta: space_vec | time_space
   gamma: space_vec | time_space
-
-class TrafficData(NamedTuple):
-  """Prepared observations; arrays retain the full input time range."""
-  density: time_space          # veh/km/lane
-  flow: time_space             # veh/hr, across all lanes
-  velocity: time_space         # km/hr
-  lanes: space_vec
-  inflow: time_vec             # veh/hr
-  downstream_density: time_vec # veh/km/lane
-  initial_density: space_vec
-  initial_velocity: space_vec
-
-class MPCSolveResult(NamedTuple):
-  iterations: int
-  cpu_time: float              # seconds
-  control_vsl: time_space      # control-horizon speed limits
-  prediction_vsl: time_space   # full prediction-horizon speed limits
-  density_error: float
-  velocity_error: float
 
 class SimulationResult(NamedTuple):
   density: time_space
@@ -74,10 +95,26 @@ class OptimizationResult(NamedTuple):
 @dataclass(frozen=True)
 class RunResult:
   """A complete optimization run: inputs, settings, and numerical outputs."""
-  scenario: "Scenario"
+  scenario: Scenario
   params: MetanetParams
-  config: "MPCConfig"
+  config: MPCConfig
   optimization: OptimizationResult
+
+@dataclass(frozen=True)
+class MPCStats:
+  gt_tt: veh_hr; sim_tt: veh_hr; opt_tt: veh_hr; ff_tt: veh_hr; sim_window_tt: veh_hr
+  sim_error: float
+  num_veh: float
+  @property
+  def tts_error(self): return abs(self.gt_tt - self.sim_window_tt) / self.gt_tt * 100 
+  @property
+  def cc(self): return np.clip((self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100, 0, 100)
+  @property
+  def avg_tt_reduced_per_veh(self): return (self.sim_tt - self.opt_tt) / self.num_veh * 60
+  @property
+  def uncontrolled_avg_tts(self): return (self.sim_tt - self.ff_tt) / self.num_veh * 60
+  @property
+  def controlled_avg_tts(self): return (self.opt_tt - self.ff_tt) / self.num_veh * 60
 
 # pyo types
 import pyomo.environ as pyo

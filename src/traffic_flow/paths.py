@@ -1,5 +1,6 @@
 from pathlib import Path
-from .config import CalRef, StudyChoice
+from .config import StudyChoice
+from .types import CalRef
 import os
 
 REPO_DIR = Path(os.path.abspath(__file__)).parents[2]

@@ -3,6 +3,12 @@ from collections.abc import Iterator
 import warnings
 from ..types import *
 
+class MetanetState(NamedTuple):
+  density: space_vec
+  velocity: space_vec
+  demand: float
+  queue: float
+
 # ----------------------------
 # Core METANET helper functions
 # ----------------------------
@@ -92,7 +98,7 @@ def _extend_params_for_drain(params: MetanetParams, time_steps: int,
 
 class METANET_Simulator:
     """Wrapper class for running METANET simulations with a given set of parameters and initial state."""
-    def __init__(self, T: hr, l: km, params: MetanetParams, lanes: lane_map | None = None, real_data: bool = False):
+    def __init__(self, T: hr, l: km, params: MetanetParams, lanes: space_vec | None = None, real_data: bool = False):
         self.until_ff = False # can switch
         self.drain_tol: float | None = None
 
@@ -102,7 +108,7 @@ class METANET_Simulator:
         self._base_params: MetanetParams = params
         self.params: MetanetParams = params
         self.num_segments = params['tau'].shape[-1]
-        self.lanes_array = np.array([lanes[i] for i in range(len(lanes))]) if lanes is not None else np.array([1.0] * self.num_segments)
+        self.lanes_array = np.ones(self.num_segments, dtype=float) if lanes is None else lanes.copy()
 
         self.drain_tol = 1e-3 * sum(self.lanes_array[i] for i in range(self.num_segments)) * self.l
         self.max_drain_steps = None

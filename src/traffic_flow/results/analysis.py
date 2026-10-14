@@ -1,5 +1,4 @@
 """Numerical CC report inputs; no plotting or file writes."""
-from dataclasses import dataclass
 import numpy as np
 from ..types import *
 from ..inputs.scenario import Scenario
@@ -74,25 +73,9 @@ def format_date_label(date_str: str, year=2022):
     tag = 'Holiday' if (month, day) in HOLIDAY_DATES else datetime.date(year, month, day).strftime('%a')
     return f"{month:02d}/{day:02d} ({tag})"
 
-@dataclass(frozen=True)
-class MPCStats:
-    gt_tt: veh_hr; sim_tt: veh_hr; opt_tt: veh_hr; ff_tt: veh_hr; sim_window_tt: veh_hr
-    sim_error: float
-    num_veh: float
-    @property
-    def tts_error(self): return abs(self.gt_tt - self.sim_window_tt) / self.gt_tt * 100 
-    @property
-    def cc(self): return np.clip((self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100, 0, 100)
-    @property
-    def avg_tt_reduced_per_veh(self): return (self.sim_tt - self.opt_tt) / self.num_veh * 60
-    @property
-    def uncontrolled_avg_tts(self): return (self.sim_tt - self.ff_tt) / self.num_veh * 60
-    @property
-    def controlled_avg_tts(self): return (self.opt_tt - self.ff_tt) / self.num_veh * 60
-
 def run_analysis(run: RunResult) -> MPCStats:
     spec, traffic = run.scenario.spec, run.scenario.traffic
-    gt_tt = (spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes) 
+    gt_tt = (spec.time_step * spec.L * (traffic.density.sum(axis=0) @ spec.lanes)
              if len(traffic.density) else float('nan'))
     sim_tt, opt_tt = run.optimization.baseline.total_travel_time, run.optimization.controlled.total_travel_time
     ffv = run.params['v_free']
@@ -101,12 +84,12 @@ def run_analysis(run: RunResult) -> MPCStats:
     if beta.ndim == 2: beta = beta[np.minimum(np.arange(len(rho)), len(beta)-1)]
     return MPCStats(
         gt_tt = gt_tt, sim_tt = sim_tt, opt_tt = opt_tt,
-        sim_window_tt = float(spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ traffic.lanes)),
+        sim_window_tt = float(spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ spec.lanes)),
         sim_error = float(mape(traffic.velocity, vel[:spec.time_steps])) if len(traffic.velocity) else float('nan'),
-        ff_tt = ff_tts_vkm(rho, vel, traffic.lanes, spec.time_step, spec.L, run.params["v_free"])
+        ff_tt = ff_tts_vkm(rho, vel, spec.lanes, spec.time_step, spec.L, run.params["v_free"])
                 if LATEST_UPDATE else 
                 get_ff_tts(traffic.inflow, spec.time_step, spec.L, ffv.max(axis=0) if ffv.ndim==2 else ffv),        
-        num_veh=vehicles_served(rho, vel, traffic.lanes, beta, spec.time_step)
+        num_veh=vehicles_served(rho, vel, spec.lanes, beta, spec.time_step)
                 if LATEST_UPDATE else 
                 traffic.inflow.sum() * spec.time_step
     )

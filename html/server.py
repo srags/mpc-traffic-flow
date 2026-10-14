@@ -104,7 +104,7 @@ def _delay_curve(run: RunResult) -> dict[str, object]:
     steps = max(len(baseline.density), len(controlled.density)) - 1
     costs = []
     for simulation in (baseline, controlled):
-        road_cost = spec.time_step * spec.L * (simulation.density @ traffic.lanes)
+        road_cost = spec.time_step * spec.L * (simulation.density @ spec.lanes)
         cost = road_cost + spec.time_step * simulation.queue.reshape(-1)
         if not np.isclose(cost.sum(), simulation.total_travel_time, rtol=1e-9, atol=1e-8):
             # Current run_with_history omits terminal road occupancy, but keeps
@@ -162,7 +162,7 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int,
         np.isfinite(value) and value > 0 for value in (spec.time_step, spec.L)
     ) or not np.isfinite(spec.start_hour):
         raise ValueError("Invalid scenario geometry or timing")
-    if traffic.lanes.shape != (segments,) or not np.isfinite(traffic.lanes).all() or np.any(traffic.lanes <= 0):
+    if spec.lanes.shape != (segments,) or not np.isfinite(spec.lanes).all() or np.any(spec.lanes <= 0):
         raise ValueError("Invalid saved lane counts")
     if result.vsl.shape != (observed_steps, segments) or not np.isfinite(result.vsl).all():
         raise ValueError("Saved VSL dimensions/values do not match the scenario")
@@ -221,7 +221,7 @@ def _load_scenario(scenario_id: str, modified_ns: int, size: int, inode: int,
             "segments": segments,
             "segmentLengthKm": spec.L,
             "startHour": spec.start_hour,
-            "lanes": traffic.lanes.tolist(),
+            "lanes": spec.lanes.tolist(),
         },
         "scales": {"velocity": [0.0, velocity_max], "density": [0.0, density_max]},
     }

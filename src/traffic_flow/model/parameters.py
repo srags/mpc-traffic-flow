@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import cast
 import numpy as np
-from ..types import MetanetParams
+from .simulation import MetanetParams
 
 def param_slice(params: MetanetParams, start_time_step, end_time_step, desired_length=None) -> MetanetParams:
     sliced_params = {}

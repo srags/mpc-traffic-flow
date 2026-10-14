@@ -76,7 +76,9 @@ def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, cont
     spec, traffic = scenario.spec, scenario.traffic
     assert (spec.L, spec.time_step) == (0.4, 10 / 3600)
     assert (spec.time_steps, spec.num_segments) == old[0].shape
-    for name, actual, expected in zip(traffic._fields, traffic, old):
+    np.testing.assert_allclose(spec.lanes, old[3], rtol=RTOL, atol=ATOL)
+    old_observations = (*old[:3], *old[4:])
+    for name, actual, expected in zip(traffic._fields, traffic, old_observations):
         assert actual.shape == expected.shape, name
         np.testing.assert_allclose(actual, expected, rtol=RTOL, atol=ATOL, equal_nan=False)
 
@@ -130,7 +132,7 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
         simulator = baseline.traffic_sim.METANET_Simulator(
             T=spec.time_step, l=spec.L,
             params={key: value.copy() for key, value in run.params.items()},
-            lanes=dict(enumerate(traffic.lanes)), real_data=False,
+            lanes=dict(enumerate(spec.lanes)), real_data=False,
         )
         expected = simulator.run_with_history(
             np.pad(traffic.inflow, (0, 1), mode="edge"),
@@ -143,7 +145,7 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
         )
         # Saved current runs use the same terminal-density exclusion as the
         # history API. Do not relax tolerances or accept arbitrary TTT changes.
-        terminal_road_ttt = spec.time_step * spec.L * (expected[0][-1] @ traffic.lanes)
+        terminal_road_ttt = spec.time_step * spec.L * (expected[0][-1] @ spec.lanes)
         expected = (*expected[:-1], expected[-1] - terminal_road_ttt)
         actual = getattr(run.optimization, phase)
         for name, saved, previous in zip(actual._fields, actual, expected):
@@ -176,7 +178,7 @@ def test_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method,
         for rho, queue in (([10, 20], 1.), ([30, 40], 2.), (terminal_density, 7.))
     ]
     simulator = METANET_Simulator(
-        T=0.1, l=0.5, params=default_metanet_params(2), lanes={0: 2., 1: 3.},
+        T=0.1, l=0.5, params=default_metanet_params(2), lanes=np.array([2., 3.]),
     )
     simulator.until_ff = until_ff
     simulator.drain_tol = 1.0
@@ -203,7 +205,7 @@ def test_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method,
 
 
 def test_synthetic_reports_preserve_original_replay():
-    """Protect the two headline peaks and the old unpadded-demand convention."""
+    """Protect legacy trajectories and duration-limited demand totals."""
     from traffic_flow.config import SyntheticConfig
     from traffic_flow.model.parameters import default_metanet_params
     from traffic_flow.model.simulation import METANET_Simulator
@@ -231,7 +233,7 @@ def test_synthetic_reports_preserve_original_replay():
             float(peak) if int(0.055 / T) <= t < int((0.055 + 0.5) / T) else 4000.0
             for t in range(721)
         ])
-        lanes = {i: 4.0 if i < 20 else 2.0 for i in range(25)}
+        lanes = np.array([4.0 if i < 20 else 2.0 for i in range(25)])
         state = MetanetState(np.full(25, demand[0] / (4 * 90)), np.full(25, 90.0), demand[0], 0)
         sim = METANET_Simulator(T=T, l=0.4, params=params, lanes=lanes, real_data=False)
         baseline = sim.run_with_history(demand, np.zeros(720), state)
@@ -244,7 +246,10 @@ def test_synthetic_reports_preserve_original_replay():
             for new, old in zip(actual, expected):
                 np.testing.assert_allclose(new, old, rtol=RTOL, atol=ATOL, equal_nan=False)
 
-        num_veh = float(np.sum(demand)) * T
+        # Since 702407a, generated demand has T samples, not T+1. Keep the
+        # historical trajectory reference above, but exclude its extra terminal
+        # demand sample from vehicle/free-flow totals, as production already does.
+        num_veh = float(np.sum(demand[:config.time_steps])) * T
         ff = num_veh * (10.0 / float(params["v_free"][0]))
         delay, delay_c = baseline[-1] - ff, controlled[-1] - ff
         np.testing.assert_allclose(
@@ -292,18 +297,20 @@ def latest_main():
 @pytest.fixture(scope="module", params=[False, True], ids=["static", "time-varying"])
 def drain_case(request):
     """Small corridor with unequal lanes, both ramp types and a nontrivial drain."""
-    from traffic_flow.config import ScenarioConfig
+    from traffic_flow.config import ScenarioSpec
     from traffic_flow.inputs.scenario import Scenario
     from traffic_flow.model.parameters import default_metanet_params
     from traffic_flow.types import TrafficData
 
     n, segments = 30, 3
-    spec = ScenarioConfig("test", "day", 0.4, segments, 5 / 3600, n)
     density = np.tile([15., 18., 20.], (n, 1))
     velocity = np.full((n, segments), 90.)
     lanes = np.array([3., 4., 2.])
+    spec = ScenarioSpec("test", "day", 0.4, segments, 5 / 3600, n, lanes=lanes,
+                          on_ramps=np.array([False, True, False]),
+                          off_ramps=np.array([False, True, True]))
     traffic = TrafficData(
-        density, density * velocity * lanes, velocity, lanes,
+        density, density * velocity * lanes, velocity,
         np.full(n, 2000.), np.full(n, 10.), density[0].copy(), velocity[0].copy(),
     )
     params = default_metanet_params(segments)
@@ -319,7 +326,7 @@ def drain_case(request):
         params["r"] *= np.linspace(0.8, 1.2, n)[:, None]
     vsl = np.full((n, segments), 70.)
     # Production calls must not alter observations, calibration or the saved policy.
-    for array in (*traffic, *params.values(), vsl):
+    for array in (spec.lanes, spec.on_ramps, spec.off_ramps, *traffic, *params.values(), vsl):
         array.flags.writeable = False
     return Scenario(spec, traffic), params, vsl
 
@@ -333,13 +340,13 @@ def main_replay(reference, scenario, params, vsl, *, real_data, until_ff):
         init_traffic_state=(traffic.initial_density.copy(), traffic.initial_velocity.copy(),
                             float(traffic.inflow[0]), 0.),
         demand=traffic.inflow.copy(), downstream_density=traffic.downstream_density.copy(),
-        params=deepcopy(params), lanes=dict(enumerate(traffic.lanes)),
+        params=deepcopy(params), lanes=dict(enumerate(spec.lanes)),
         vsl_speeds=None if vsl is None else vsl.copy(),
         plotting=True, real_data=real_data, until_ff=until_ff,
     )
     # The agreed convention differs from main ONLY by terminal road occupancy.
     # Never subtract terminal queue or loosen tolerances to obtain parity.
-    terminal = spec.time_step * spec.L * (result[0][-1] @ traffic.lanes)
+    terminal = spec.time_step * spec.L * (result[0][-1] @ spec.lanes)
     return SimulationResult(*result[:3], float(result[3] - terminal))
 
 
@@ -408,16 +415,16 @@ def test_report_modes_match_main_with_agreed_ttt(monkeypatch, latest_main, drain
         extended = latest_main._extend_params_for_drain(
             run.params, spec.time_steps, len(rho), spec.num_segments,
         )
-        ff = latest_main.ff_tts_vkm(rho, velocity, traffic.lanes, spec.time_step, spec.L, run.params["v_free"])
-        served = latest_main.vehicles_served(rho, velocity, traffic.lanes, extended["beta"], spec.time_step)
+        ff = latest_main.ff_tts_vkm(rho, velocity, spec.lanes, spec.time_step, spec.L, run.params["v_free"])
+        served = latest_main.vehicles_served(rho, velocity, spec.lanes, extended["beta"], spec.time_step)
     else:
         served = float(traffic.inflow.sum()) * spec.time_step
         free_speed = run.params["v_free"]
         if free_speed.ndim == 2:
             free_speed = free_speed.max(axis=0)
         ff = served * sum(spec.L / speed for speed in free_speed)
-    gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ traffic.lanes)
-    window_tt = spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ traffic.lanes)
+    gt_tt = spec.time_step * spec.L * (traffic.density.sum(axis=0) @ spec.lanes)
+    window_tt = spec.time_step * spec.L * (rho[:spec.time_steps].sum(axis=0) @ spec.lanes)
     sim_tt, opt_tt = baseline.total_travel_time, controlled.total_travel_time
     expected = {
         "gt_tt": gt_tt, "sim_tt": sim_tt, "opt_tt": opt_tt, "ff_tt": ff, "num_veh": served,

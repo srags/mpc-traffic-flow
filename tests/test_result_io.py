@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from traffic_flow import save_result
 from traffic_flow.results.io import load_npz
-from traffic_flow.config import CalRef, InitMode, MPCConfig, ScenarioConfig, Study
+from traffic_flow.config import CalRef, InitMode, MPCConfig, ScenarioSpec, Study
 from traffic_flow.inputs.scenario import Scenario, prepare_traffic_data
 from traffic_flow.model.parameters import default_metanet_params
 from traffic_flow.types import OptimizationResult, RunResult, SimulationResult
@@ -29,9 +29,12 @@ def run_result(tmp_path, monkeypatch):
     # Both the path builder and I/O's display root stay inside pytest's sandbox.
     monkeypatch.setattr(paths, "REPO_DIR", tmp_path)
     monkeypatch.setattr(result_io, "REPO_DIR", tmp_path)
-    spec = ScenarioConfig("test", "day", 0.4, 2, 10 / 3600, 6)
+    spec = ScenarioSpec(
+        "test", "day", 0.4, 2, 10 / 3600, 6, lanes=np.array([4., 3.5]),
+        on_ramps=np.array([True, False]), off_ramps=np.array([False, True]),
+    )
     traffic = prepare_traffic_data(
-        np.full((6, 4), 50.), np.full((6, 4), 3000.), np.array([4., 3.]),
+        np.full((6, 4), 50.), np.full((6, 4), 3000.), spec.lanes,
     )
     params = default_metanet_params(2)
     params["r"] = np.arange(12, dtype=np.float32).reshape(6, 2)
@@ -39,9 +42,9 @@ def run_result(tmp_path, monkeypatch):
     result = OptimizationResult(
         np.arange(12, dtype=float).reshape(6, 2) + 200.,
         SimulationResult(history + 30., history + 80., np.ones((7, 1)),
-                         spec.time_step * (spec.L * ((history[:-1] + 30.) * traffic.lanes).sum() + 7.)),
+                         spec.time_step * (spec.L * ((history[:-1] + 30.) * spec.lanes).sum() + 7.)),
         SimulationResult(history + 25., history + 85., np.zeros((7, 1)),
-                         spec.time_step * spec.L * ((history[:-1] + 25.) * traffic.lanes).sum()),
+                         spec.time_step * spec.L * ((history[:-1] + 25.) * spec.lanes).sum()),
     )
     config = MPCConfig(
         3, 2, control_zone=(1,), safety_temporal=0.7, safety_spatial=25,
@@ -51,7 +54,23 @@ def run_result(tmp_path, monkeypatch):
     return RunResult(Scenario(spec, traffic), params, config, result)
 
 
-def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
+def assert_dataclass_equal(actual, expected):
+    for field in fields(expected):
+        value, wanted = getattr(actual, field.name), getattr(expected, field.name)
+        if isinstance(wanted, np.ndarray):
+            assert value.shape == wanted.shape and value.dtype == wanted.dtype, field.name
+            np.testing.assert_array_equal(value, wanted, err_msg=field.name)
+        else:
+            assert value == wanted, field.name
+
+
+@pytest.mark.parametrize("has_ramps", [True, False])
+def test_complete_run_round_trip(tmp_path, monkeypatch, run_result, has_ramps):
+    spec = run_result.scenario.spec
+    if not has_ramps:
+        spec = replace(spec, on_ramps=np.zeros(spec.num_segments, dtype=bool),
+                       off_ramps=np.zeros(spec.num_segments, dtype=bool))
+    run_result = replace(run_result, scenario=replace(run_result.scenario, spec=spec))
     original = deepcopy(run_result)
     assert original.scenario.spec.start_hour == 7.5
     path = save_result(run_result, calibration=CalRef("custom_fit"), study=None, file_name="trial")
@@ -61,9 +80,13 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
     real_load = np.load
     with real_load(path, allow_pickle=False) as archive:
         metadata = json.loads(archive["metadata"].item())
-    assert metadata["schema_version"] == 2
+        assert {"spec.lanes", "spec.on_ramps", "spec.off_ramps"} <= set(archive.files)
+        assert "traffic.lanes" not in archive.files
+        assert all(not archive[name].dtype.hasobject for name in archive.files)
+    assert metadata["schema_version"] == 3
     assert metadata["scenario"]["start_hour"] == 7.5
     assert "start_time" not in metadata["scenario"]
+    assert not {"lanes", "on_ramps", "off_ramps"} & metadata["scenario"].keys()
 
     def read_bundle_only(file, *args, **kwargs):
         assert Path(file) == path, "Loading must not reread observations or calibration"
@@ -74,14 +97,8 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
     restored = load_npz(path)
     # Compare both the restored result and the input, which saving must not mutate.
     for actual in (restored, run_result):
-        assert actual.scenario.spec == original.scenario.spec
-        for field in fields(original.config):
-            expected, value = getattr(original.config, field.name), getattr(actual.config, field.name)
-            if isinstance(expected, np.ndarray):
-                assert value.dtype == expected.dtype
-                np.testing.assert_array_equal(value, expected)
-            else:
-                assert value == expected
+        assert_dataclass_equal(actual.scenario.spec, original.scenario.spec)
+        assert_dataclass_equal(actual.config, original.config)
         groups = (
             (actual.scenario.traffic._asdict(), original.scenario.traffic._asdict()),
             (actual.params, original.params),
@@ -99,35 +116,13 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result):
     assert list(directory.iterdir()) == [path]
 
 
-@pytest.mark.parametrize("offset,expected_hour", [(0., 7.5), (0.25, 7.75)])
-def test_legacy_start_time_loads_as_clock_hour_without_rewriting(run_result, offset, expected_hour):
-    path = save_result(run_result, calibration=CalRef(), study=None)
-    with np.load(path, allow_pickle=False) as archive:
-        arrays = {name: archive[name] for name in archive.files}
-    metadata = json.loads(arrays["metadata"].item())
-    metadata["schema_version"] = 1
-    del metadata["scenario"]["start_hour"]
-    metadata["scenario"]["start_time"] = offset
-    arrays["metadata"] = np.asarray(json.dumps(metadata))
-    np.savez_compressed(path, **arrays)
-    before = path.read_bytes()
-
-    restored = load_npz(path)
-    assert restored.scenario.spec == replace(run_result.scenario.spec, start_hour=expected_hour)
-    np.testing.assert_array_equal(restored.optimization.vsl, run_result.optimization.vsl)
-    for phase in ("baseline", "controlled"):
-        actual, expected = getattr(restored.optimization, phase), getattr(run_result.optimization, phase)
-        for name in SimulationResult._fields:
-            np.testing.assert_array_equal(getattr(actual, name), getattr(expected, name))
-    assert path.read_bytes() == before
-
-
 @pytest.mark.parametrize("version,missing_field,error", [
+    (1, None, "Unsupported run schema version"),
+    (2, None, "Unsupported run schema version"),
     (99, None, "Unsupported run schema version"),
-    (2, "start_hour", "scenario metadata"),
-    (1, "start_time", "scenario metadata"),
+    (3, "start_hour", "scenario metadata"),
 ])
-def test_start_hour_schema_rejects_unknown_versions_or_missing_clock(
+def test_loading_rejects_unsupported_versions_or_missing_clock(
     run_result, version, missing_field, error,
 ):
     path = save_result(run_result, calibration=CalRef(), study=None)
@@ -135,13 +130,22 @@ def test_start_hour_schema_rejects_unknown_versions_or_missing_clock(
         arrays = {name: archive[name] for name in archive.files}
     metadata = json.loads(arrays["metadata"].item())
     metadata["schema_version"] = version
-    if version == 1:
-        metadata["scenario"]["start_time"] = metadata["scenario"].pop("start_hour") - 7.5
     if missing_field is not None:
         del metadata["scenario"][missing_field]
     arrays["metadata"] = np.asarray(json.dumps(metadata))
     np.savez_compressed(path, **arrays)
     with pytest.raises(ValueError, match=error):
+        load_npz(path)
+
+
+@pytest.mark.parametrize("key", ["spec.lanes", "spec.on_ramps", "spec.off_ramps"])
+def test_loading_rejects_missing_geometry(run_result, key):
+    path = save_result(run_result, calibration=CalRef(), study=None)
+    with np.load(path, allow_pickle=False) as archive:
+        arrays = {name: archive[name] for name in archive.files}
+    del arrays[key]
+    np.savez_compressed(path, **arrays)
+    with pytest.raises(ValueError, match="Missing scenario geometry"):
         load_npz(path)
 
 
@@ -329,7 +333,7 @@ def extended_run(run, baseline_steps, controlled_steps, *, legacy=False):
         velocity = density + 40.
         queue = np.arange(steps + 1, dtype=float).reshape(-1, 1) + 1.
         counted_density = density if legacy else density[:-1]
-        total = spec.time_step * (spec.L * (counted_density @ traffic.lanes).sum() + queue.sum())
+        total = spec.time_step * (spec.L * (counted_density @ spec.lanes).sum() + queue.sum())
         simulations.append(SimulationResult(density, velocity, queue, float(total)))
     return replace(run, optimization=OptimizationResult(run.optimization.vsl, *simulations))
 
@@ -363,12 +367,12 @@ def test_viewer_unequal_histories_preserve_costs_and_reporting(
     def elapsed(simulation, cutoff):
         own_steps = len(simulation.density) - 1
         used = min(cutoff, own_steps)
-        road = run.scenario.spec.L * (simulation.density[:used] @ run.scenario.traffic.lanes).sum()
+        road = run.scenario.spec.L * (simulation.density[:used] @ run.scenario.spec.lanes).sum()
         queue = simulation.queue[:used].sum()
         if cutoff >= own_steps:
             queue += simulation.queue[-1].sum()
             if legacy:
-                road += run.scenario.spec.L * (simulation.density[-1] @ run.scenario.traffic.lanes)
+                road += run.scenario.spec.L * (simulation.density[-1] @ run.scenario.spec.lanes)
         return run.scenario.spec.time_step * (road + queue)
 
     baseline, controlled = run.optimization.baseline, run.optimization.controlled

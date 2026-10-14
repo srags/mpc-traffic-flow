@@ -6,12 +6,11 @@ from traffic_flow.model.parameters import param_slice
 
 from .config import CalibrationConfig, MPCConfig
 
-from .inputs.scenario import Scenario
-from .model.simulation import METANET_Simulator
+from .model.simulation import METANET_Simulator, MetanetState
 from .types import (
-  TrafficData, MetanetParams, MetanetState,
+  TrafficData, MetanetParams,
   SimulationResult, OptimizationResult,
-  time_space, hr, km, RunResult
+  time_space, hr, km, RunResult, Scenario
 )
 
 from copy import deepcopy
@@ -24,14 +23,12 @@ def init_state(traffic: TrafficData) -> MetanetState:
     queue=0.0,
   )
 
-def simulate(
-  scenario: Scenario,
-  params: MetanetParams,
-  vsl: time_space | None = None,
-  steps: int | None = None,
-  real_data: bool = False,
-  until_ff: bool = False
-) -> SimulationResult:
+def simulate(scenario: Scenario,
+             params: MetanetParams,
+             vsl: time_space | None = None,
+             steps: int | None = None,
+             real_data: bool = False,
+             until_ff: bool = False) -> SimulationResult:
   """Simulate aligned inputs, returning histories including the terminal state.
 
   With no VSL, use the simulator's unrestricted-speed default. `real_data=True`
@@ -43,11 +40,11 @@ def simulate(
   assert isinstance(steps, int) and 1 <= steps <= min(len(traffic.inflow), len(traffic.downstream_density))
   assert all(not isinstance(values, np.ndarray) or values.ndim == 1 or steps <= len(values) for values in params.values())
   params = param_slice(params, 0, steps)
-  if vsl is not None and vsl.shape != (steps, len(traffic.lanes)):
+  if vsl is not None and vsl.shape != (steps, scenario.spec.num_segments):
       raise ValueError(f"Unexpected VSL shape: {vsl.shape}")
   simulator = METANET_Simulator(
     T=scenario.spec.time_step, l=scenario.spec.L, params=params,
-    lanes={i: float(count) for i, count in enumerate(traffic.lanes)},
+    lanes=scenario.spec.lanes,
     real_data=real_data,
   )
   simulator.until_ff = until_ff
@@ -58,18 +55,21 @@ def simulate(
     vsl_speeds=vsl
   ))
 
-def calibrate(scenario: Scenario, config: CalibrationConfig) -> MetanetParams:
+def calibrate(scenario: Scenario, 
+              config: CalibrationConfig) -> MetanetParams:
   """Fit this scenario's observations; no saved calibration is required."""
   from .solvers.calibration import run_calibration
-  return run_calibration(scenario.traffic, scenario.spec.time_step, scenario.spec.L, config=config)
+  return run_calibration(scenario.traffic, scenario.spec, config=config)
 
-def optimize(scenario: Scenario, params: MetanetParams, config: MPCConfig) -> RunResult:
+def optimize(scenario: Scenario, 
+             params: MetanetParams, 
+             config: MPCConfig) -> RunResult:
   """Optimize using independent snapshots of the supplied inputs."""
   steps = scenario.spec.time_steps
-  num_segments = len(scenario.traffic.lanes)
+  num_segments = scenario.spec.num_segments
   assert 1 <= config.control_horizon <= config.pred_horizon, "Require 1 <= control_horizon <= pred_horizon"
   assert config.pred_horizon <= steps, "Duration must cover at least one prediction horizon"
-  lanes = {i: float(count) for i, count in enumerate(scenario.traffic.lanes)}
+  lanes = scenario.spec.lanes
 
   opt_horizon = steps + config.pred_horizon - config.control_horizon
 
@@ -88,13 +88,16 @@ def optimize(scenario: Scenario, params: MetanetParams, config: MPCConfig) -> Ru
   scenario, params, config = deepcopy((scenario, params, config))
   return RunResult(scenario, params, config, optimization = evaluate(scenario, params, vsl))
 
-def evaluate(scenario: Scenario, params: MetanetParams, vsl: time_space, until_ff: bool = False) -> OptimizationResult:
+def evaluate(scenario: Scenario, 
+             params: MetanetParams, 
+             vsl: time_space, 
+             until_ff: bool = False) -> OptimizationResult:
   """Replay a supplied policy against the 150 km/hr modeled-origin baseline.
   No optimization or file writes; the raw policy is not display-clipped.
   """
   spec = scenario.spec
   steps = spec.time_steps
-  assert vsl.shape == (steps, len(scenario.traffic.lanes)), f"Unexpected VSL shape: {vsl.shape}"
+  assert vsl.shape == (steps, spec.num_segments), f"Unexpected VSL shape: {vsl.shape}"
   assert steps == scenario.traffic.inflow.shape[0], f"Unexpected inflow shape: {scenario.traffic.inflow.shape} vs {steps}"
   return OptimizationResult(vsl=vsl, 
     baseline=simulate(scenario, params, vsl=None, real_data=True, until_ff=until_ff), 

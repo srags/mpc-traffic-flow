@@ -1,14 +1,14 @@
 import json
-from dataclasses import asdict, fields
+from dataclasses import fields
 from pathlib import Path
 
 import numpy as np
 
-from ..config import StudyChoice, MPCConfig, ScenarioConfig, CalRef
+from ..config import StudyChoice, MPCConfig
 from ..paths import REPO_DIR, find_npzs, collection_dir
 from ..types import (
     MetanetParams, OptimizationResult, RunResult,
-    SimulationResult, TrafficData
+    SimulationResult, TrafficData, ScenarioSpec, CalRef
 )
 from typing import Callable, cast
 from ..console import colored
@@ -16,14 +16,20 @@ from ..inputs.scenario import Scenario
 
 from tempfile import NamedTemporaryFile
 
+_GEOMETRY_FIELDS = ("lanes", "on_ramps", "off_ramps")
+
 def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file_name = "run") -> Path:
     """Save one complete run, replacing an existing bundle only after success."""
     settings = {field.name: getattr(result.config, field.name) for field in fields(result.config)}
     initialization = settings.pop("initialize_vsl")
+    spec = result.scenario.spec
 
     metadata = json.dumps({
-        "schema_version": 2,
-        "scenario": asdict(result.scenario.spec),
+        "schema_version": 3,
+        "scenario": {
+            field.name: getattr(spec, field.name)
+            for field in fields(spec) if field.name not in _GEOMETRY_FIELDS
+        },
         "config": settings,
         # JSON otherwise loses the distinction between tuples and lists.
         "init_fixed_is_tuple": isinstance(result.config.init_fixed, tuple),
@@ -33,6 +39,8 @@ def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file
         "metadata": np.asarray(metadata),
         "vsl": np.asarray(result.optimization.vsl),
     }
+    for name in _GEOMETRY_FIELDS:
+        arrays[f"spec.{name}"] = np.asarray(getattr(spec, name))
     groups = {
         "traffic": result.scenario.traffic._asdict(),
         "params": result.params,
@@ -75,18 +83,18 @@ def load_npz(file_path: Path) -> RunResult:
     with np.load(Path(file_path), allow_pickle=False) as archive:
         metadata = json.loads(archive["metadata"].item())
         version = metadata.get("schema_version")
-        if version not in (1, 2):
+        if version != 3:
             raise ValueError(f"Unsupported run schema version: {version}")
 
         spec = metadata["scenario"]
-        expected = {field.name for field in fields(ScenarioConfig)}
-        if version == 1:
-            expected = (expected - {"start_hour"}) | {"start_time"}
+        expected = {field.name for field in fields(ScenarioSpec)} - set(_GEOMETRY_FIELDS)
         if set(spec) != expected:
             raise ValueError("Incomplete or unsupported scenario metadata.")
-        if version == 1:
-            # Legacy start_time was an offset from the 07:30 clock origin.
-            spec["start_hour"] = 7.5 + spec.pop("start_time")
+        for name in _GEOMETRY_FIELDS:
+            key = f"spec.{name}"
+            if key not in archive.files:
+                raise ValueError(f"Missing scenario geometry: {key}")
+            spec[name] = archive[key]
 
         settings = metadata["config"]
         expected = {field.name for field in fields(MPCConfig)} - {"initialize_vsl"}
@@ -106,7 +114,7 @@ def load_npz(file_path: Path) -> RunResult:
         )
 
         scenario = Scenario(
-            ScenarioConfig(**spec),
+            ScenarioSpec(**spec),
             TrafficData(**{
                 name: archive[f"traffic.{name}"]
                 for name in TrafficData._fields

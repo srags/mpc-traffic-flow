@@ -3,7 +3,7 @@ import sys, time
 from ..types import *
 from ..config import InitValue, InitChoices, InitMode
 
-from ..model.simulation import param_at, METANET_Simulator
+from ..model.simulation import param_at, METANET_Simulator, MetanetState
 
 from tqdm import tqdm
 
@@ -22,11 +22,19 @@ class MPCSolveError(RuntimeError):
 
 from ..model.parameters import param_slice
 
+class MPCSolveResult(NamedTuple):
+  iterations: int
+  cpu_time: float              # seconds
+  control_vsl: time_space      # control-horizon speed limits
+  prediction_vsl: time_space   # full prediction-horizon speed limits
+  density_error: float
+  velocity_error: float
+
 def mpc_opt(
   T: hr, l: km, num_segments: int,
   traffic_demand: time_vec, downstream_density: time_vec,
   horizon_p, horizon_c,
-  starting_traffic_vars, lanes: lane_map, hold_len,
+  starting_traffic_vars, lanes: space_vec, hold_len,
   *, params: MetanetParams,
   initialize: time_space|None =None, init_fixed: InitValue | None = None,
   control_one_segment=None, control_changepoints=None,
@@ -418,7 +426,7 @@ def mpc_find_vsl(
   total_time_steps: int,
   traffic_demand: time_vec,
   downstream_density: time_vec,
-  lanes: lane_map,
+  lanes: space_vec,
   *,
   params: MetanetParams,
   T: hr = 5/3600, l: km = 300/1000, num_segments: int = 10,

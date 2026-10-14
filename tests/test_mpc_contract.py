@@ -11,9 +11,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 import traffic_flow.solvers.mpc as mpc
+from traffic_flow.solvers.mpc import MPCSolveResult
 from traffic_flow.model.parameters import load_metanet_params
-from traffic_flow.types import MetanetState, MPCSolveResult
-
+from traffic_flow.types import MetanetState
 
 @pytest.fixture
 def solver_loading_case(monkeypatch):
@@ -43,7 +43,7 @@ def solver_loading_case(monkeypatch):
         traffic_demand=np.full(4, 1000.), downstream_density=np.full(4, 20.),
         horizon_p=3, horizon_c=2,
         starting_traffic_vars=MetanetState(np.array([10., 20.]), np.array([90., 80.]), 1000., 0.),
-        lanes={0: 4., 1: 3.}, hold_len=1, params=load_metanet_params(num_segments=2),
+        lanes=np.array([4., 3.]), hold_len=1, params=load_metanet_params(num_segments=2),
     )
     return SimpleNamespace(result=result, loader=loader, solver=solver, arguments=arguments)
 
@@ -100,7 +100,7 @@ def retry_case(monkeypatch):
     def run(**overrides):
         arguments = dict(
             total_time_steps=3, traffic_demand=np.full(7, 1000.),
-            downstream_density=np.full(7, 20.), lanes={0: 4., 1: 3.},
+            downstream_density=np.full(7, 20.), lanes=np.array([4., 3.]),
             params=load_metanet_params(num_segments=2), num_segments=2,
             pred_horizon=3, control_horizon=3, init_state=state,
             initialize_vsl=initialization, init_fixed=[80., 90.],

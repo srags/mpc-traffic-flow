@@ -112,16 +112,16 @@ def reference_simulation(module, scenario, params, vsl, real_data, drain):
         spec.time_step, spec.L,
         (traffic.initial_density, traffic.initial_velocity, float(traffic.inflow[0]), 0.),
         traffic.inflow, traffic.downstream_density, params,
-        lanes=dict(enumerate(traffic.lanes)), vsl_speeds=vsl,
+        lanes=dict(enumerate(spec.lanes)), vsl_speeds=vsl,
         plotting=True, real_data=real_data, **kwargs,
     )
-    terminal = spec.time_step * spec.L * (result[0][-1] @ traffic.lanes)
+    terminal = spec.time_step * spec.L * (result[0][-1] @ spec.lanes)
     return SimulationResult(*result[:3], float(result[3] - terminal)), float(result[3])
 
 
 def report_metrics(module, scenario, params, baseline, controlled, drain):
     spec, traffic = scenario.spec, scenario.traffic
-    T, L, lanes = spec.time_step, spec.L, traffic.lanes
+    T, L, lanes = spec.time_step, spec.L, spec.lanes
     rho, velocity = baseline.density[:-1], baseline.velocity[:-1]
     if drain:
         ff = module["ff_tts_vkm"](rho, velocity, lanes, T, L, params["v_free"])
@@ -186,10 +186,14 @@ def audit(phase):
         if key not in scenarios:
             day = report["load_day_data"](spec.date)
             traffic = TrafficData(day["d_trimmed"], day["flow_data"][:, 1:-1], day["v_trimmed"],
-                                  day["lane_counts"], day["data_inflow"], day["ds_density_norm"],
+                                  day["data_inflow"], day["ds_density_norm"],
                                   day["init_state"][0], day["init_state"][1])
+            geometry_dir = ROOT / "data" / "i24" / f"i24_{spec.date}"
             reference_spec = replace(spec, L=0.4, time_step=10 / 3600,
-                                     time_steps=len(traffic.inflow), num_segments=day["num_segments"])
+                                     time_steps=len(traffic.inflow), num_segments=day["num_segments"],
+                                     lanes=np.asarray(day["lane_counts"], dtype=float),
+                                     on_ramps=reference.load(geometry_dir / "on_ramp_mapping.npy")[1:-1],
+                                     off_ramps=reference.load(geometry_dir / "off_ramp_mapping.npy")[1:-1])
             scenario = Scenario(reference_spec, traffic)
             params = day["static_params"]
             if calibration == "dynamic":
@@ -210,7 +214,7 @@ def audit(phase):
         expected_c, raw_c = reference_simulation(module, scenario, params, controls, False, drain)
         actual_c = simulate(scenario, params, controls, real_data=False, until_ff=drain)
 
-        for name in ("L", "time_step", "time_steps", "num_segments"):
+        for name in ("L", "time_step", "time_steps", "num_segments", "lanes"):
             check("saved_spec", name, getattr(spec, name), getattr(scenario.spec, name), path)
         for name, actual, expected in zip(scenario.traffic._fields, run.scenario.traffic, scenario.traffic):
             check("saved_inputs", name, actual, expected, path)
