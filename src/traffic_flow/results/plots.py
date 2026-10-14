@@ -26,7 +26,7 @@ def format_time(start_hour: hr, minutes: float) -> str:
 class PlotterAxes(Axes):
   def parent(self, p: "Plotter"):
     self._parent = p
-    return self
+
   def plot_time_space(self, data: time_space, spec: ScenarioSpec, vmax: float, title: str = "",
                     colorbar: None | tuple[Literal["h", "v"], str] = None, grid: bool = False,
                     cmap: str = 'RdYlGn', vmin = 0., smooth: bool = False, **kwargs) -> ScalarMappable:
@@ -62,12 +62,6 @@ class Plotter:
 
   def __iter__(self):
     for i in range(self.rows * self.cols): yield self[i]
-
-  def colorbar(self, image: ScalarMappable, axes: list[int], label: str = "",) -> Colorbar:
-    return self.fig.colorbar(
-      image, ax=[self[i] for i in axes],
-      label=label, pad=0.02,
-    )
 
   def show(self):
     for ax in self: 
