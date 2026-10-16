@@ -248,7 +248,7 @@ function updateStats() {
   const delay = data.delay.byCutoff[cutoff];
   const saved = data.delay.baseline - delay;
   const percent = data.delay.baseline > 0 ? saved / data.delay.baseline * 100 : null;
-  const percentage = percent === null ? "" : ` · ${percent.toFixed(1)}% of baseline delay`;
+  const percentage = percent === null ? "" : ` · ${percent.toFixed(1)}% controllable congestion`;
   $("#delay").textContent = delay.toFixed(2);
   $("#delay-readout").textContent = `${saved.toFixed(2)} veh-hr saved${percentage}`;
   $("#mean-velocity").textContent = velocityCount ? (velocitySum / velocityCount).toFixed(1) : "—";

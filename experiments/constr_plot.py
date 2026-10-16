@@ -87,16 +87,27 @@ def load_scalar_sweep(study: Study, max_value=None):
     ccs = np.array([c for _, c in out])
     return values, ccs, failed, capped
 
-def load_safety_grid() -> tuple[dict[tuple[float, float], float], int]:
-    """Full (temporal, spatial) -> CC grid, excluding failed runs."""
-    grid, failed = {}, 0
-    for run in load_results("i24", DATE, CalRef(CalSource.FIXED_RAMPS, interval=None), Study.SAFETY_SWEEP):
-        if not (run.optimization.vsl == 150.).all(): 
-            temp, spat = run.config.safety_temporal, run.config.safety_spatial
-            assert temp is not None and spat is not None
-            grid[(float(temp), float(spat))] = run_analysis(replay(run, until_ff=LATEST_UPDATE)).cc
-        else: failed += 1
-    return grid, failed
+def load_safety_grid() -> tuple[
+    dict[tuple[float, float], float],
+    dict[tuple[float, float], float], int]:
+    grid, roughness, failed = {}, {}, 0
+    for run in load_results("i24", DATE, CalRef(CalSource.FIXED_RAMPS), Study.SAFETY_SWEEP):
+        vsl = run.optimization.vsl
+        if (vsl == 150.).all():
+            failed += 1
+            continue
+        temp, spat = run.config.safety_temporal, run.config.safety_spatial
+        assert temp is not None and spat is not None
+        key = (float(temp), float(spat))
+        grid[key] = run_analysis(replay(run, until_ff=LATEST_UPDATE)).cc
+        zone = run.config.control_zone
+        u = vsl if zone is None else vsl[:, list(zone)]
+        roughness[key] = float(
+            np.abs(np.diff(u, axis=0)).mean()
+            + np.abs(np.diff(u, axis=1)).mean()
+        )
+
+    return grid, roughness, failed
 
 def slice_grid(grid, axis, fixed_value, max_value=None):
     """One-dimensional slice through the safety grid.
@@ -213,12 +224,45 @@ def plot_heatmap(grid, save_path=HEATMAP_SAVE_PATH, annotate=True, min_points=3)
     return p.fig
 
 
+def plot_smoothness(
+    grid, roughness, main_grid_only=True,
+    annotate=True, save_path=SAVE_PATH.with_name("i24_safety_sweep_smoothness.pdf"),
+):
+    bounds = {0.5, 1, 2, 3, 4, 5, 7.5, 10, 15, 20, 25}
+    keys = sorted(
+        key for key in grid
+        if not main_grid_only
+        or (key[0] in bounds and key[1] in bounds)
+    )
+    if not keys:
+        raise ValueError("No successful safety runs to plot.")
+
+    p = Plotter(1, 1, figsize=(8, 6))
+    p[0].scatter([roughness[k] for k in keys], [grid[k] for k in keys])
+
+    if annotate:
+        for key in keys:
+            p[0].annotate(
+                f"({key[0]:g}, {key[1]:g})",
+                (roughness[key], grid[key]),
+                fontsize=8, xytext=(4, 4), textcoords="offset points",
+            )
+
+    p[0].set(
+        xlabel="VSL roughness (temporal + spatial)",
+        ylabel="Controllable congestion (%)",
+    )
+    p[0].grid(alpha=0.3)
+    p.fig.tight_layout()
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    p.savefig(save_path, dpi=300, bbox_inches="tight")
+
 if __name__ == "__main__":
     print_file(Path(__file__))
 
     hold_x, hold_y, hold_failed, _ = load_scalar_sweep(Study.HOLD_LENGTH)
     speed_x, speed_y, speed_failed, speed_capped = load_scalar_sweep(Study.SPEED_LB, MAX_SPEED_LB)
-    grid, grid_failed = load_safety_grid()
+    grid, roughness, grid_failed = load_safety_grid()
 
     report_coverage(grid)
 
@@ -237,3 +281,4 @@ if __name__ == "__main__":
     plot((hold_x * 10 / 60, hold_y), (speed_x, speed_y),
          (temp_x, temp_y, temp_fixed), (spat_x, spat_y, spat_fixed))
     plot_heatmap(grid)
+    plot_smoothness(grid, roughness)
