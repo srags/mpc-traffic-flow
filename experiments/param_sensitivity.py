@@ -8,7 +8,7 @@ import numpy as np
 
 from traffic_flow import CalRef, LATEST_UPDATE, load_one_result
 from traffic_flow.results.plots import Plotter
-from traffic_flow.results.sensitivity import one_at_a_time_cc
+from traffic_flow.results.sensitivity import one_at_a_time_cc, monte_carlo_cc
 
 
 DATE = "11_28"
@@ -41,3 +41,13 @@ if __name__ == "__main__":
   suffix = "_with_mape" if SHOW_MAPE else ""
   p.savefig(output / f"{DATE}{suffix}.pdf", bbox_inches="tight")
   p.show()
+
+
+
+  run = load_one_result("i24", DATE, calibration=CalRef(), study=None)
+  mc = monte_carlo_cc(run, n_samples=50, seed=0)
+
+  print(f"Nominal CC: {mc.nominal.cc_unclipped:.2f}%")
+  print(f"Accepted: {len(mc.cc)}/{mc.attempted}")
+  if mc.cc.size:
+      print(f"CC mean ± std: {mc.cc.mean():.2f} ± {mc.cc.std():.2f}%")

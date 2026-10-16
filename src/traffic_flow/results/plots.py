@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
-from matplotlib.cm import ScalarMappable
+from matplotlib.image import AxesImage
 from matplotlib.colorbar import Colorbar
 from matplotlib.projections import register_projection
 
@@ -30,7 +30,7 @@ class PlotterAxes(Axes):
 
   def plot_time_space(self, data: time_space, spec: ScenarioSpec, vmax: float, title: str = "",
                     colorbar: None | tuple[Literal["h", "v"], str] = None, grid: bool = False,
-                    cmap: str = 'RdYlGn', vmin = 0., smooth: bool = False, **kwargs) -> ScalarMappable:
+                    cmap: str = 'RdYlGn', vmin = 0., smooth: bool = False, **kwargs) -> AxesImage:
     """Plot a time-space diagram of the given data."""
     image = self.imshow(data.T, cmap=cmap, aspect='auto', extent=(0, data.shape[0], data.shape[1], 0),
                         interpolation='antialiased' if smooth else 'none', vmin=vmin, vmax=vmax)
@@ -152,4 +152,3 @@ class Plotter:
         right.tick_params(axis="y", labelcolor="orange", labelright=i % 3 == 2)
 
     self.fig.tight_layout()
-
