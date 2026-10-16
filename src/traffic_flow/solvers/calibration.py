@@ -13,16 +13,7 @@ CALIB_PARAM_BOUNDS = {                                                       # <
     "rho_crit": (15.0,        75.0),                                         # <<<
     "v_free":   (70.0,        150.0),                                        # <<<
     "a":        (0.5,         5.0),                                          # <<<
-}        
-# CALIB_PARAM_BOUNDS = {                                                       # <<<
-#     "eta_high": (30.0,        31.0),                                         # <<<
-#     "tau":      (15.0/3600,   16.0/3600),                                    # <<<
-#     "K":        (39.0,         40.0),                                         # <<<
-#     "rho_crit": (34.0,        35.0),                                         # <<<
-#     "v_free":   (90.0,        91.0),                                        # <<<
-#     "a":        (1.1,         1.2),                                          # <<<
-# }                                                                            # <<<
- 
+}
 
 class FDModel(PyoModel):
     # Observation indices

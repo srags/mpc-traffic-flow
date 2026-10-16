@@ -64,15 +64,15 @@ Its `calibration` argument labels the directory; it does not run calibration.
 ### Inputs and settings
 
 - `Scenario` bundles prepared observations (`TrafficData`) with resolved geometry
-  and timing (`ScenarioConfig`). `load_scenario` infers duration and segment count
+  and timing (`ScenarioSpec`). `load_scenario` infers duration and segment count
   from arrays. Its dataset registry supplies segment length and sample period:
   0.4 km and 10 seconds for I-24. The loader currently uses the full corridor/day.
-  `ScenarioConfig.start_hour` is the wall-clock origin, defaulting to `7.5`
-  (07:30); it does not select a simulation offset or change the input arrays.
+  `ScenarioSpec.start_hour` is the wall-clock origin, defaulting to `8`
+  (08:00, the start of all I-24 data); it does not select a simulation offset or change the input arrays.
   Geometry lives on `scenario.spec`: `lanes` contains segment lane counts,
   and `on_ramps`/`off_ramps` contain Boolean ramp-location masks. All three
   arrays are required; use all-false masks for a road without ramps.
-  `ScenarioConfig` stores arrays as supplied, without validation or copying;
+  `ScenarioSpec` stores arrays as supplied, without validation or copying;
   `frozen=True` prevents field reassignment, not changes to array contents.
   `TrafficData` contains observations and initial/boundary conditions only.
 - Inputs are `data/i24/i24_<date>/{rho_hat,q_hat,lane_mapping}.npy`.
@@ -147,6 +147,34 @@ run = matches[0]
 match, and raises `IndexError` if none exist. Use the explicit check above when
 multiple saved configurations are possible.
 
+### Importing main's saved results
+
+With a sibling `mpc-traffic-flow-main` checkout:
+
+```bash
+python experiments/migrate_main_results.py          # preview
+python experiments/migrate_main_results.py --apply  # verify, back up, install
+```
+
+The script converts every I-24 policy to schema-3 NPZ, using main's exact
+observations, preprocessing, calibration and policy arrays. It checks drained
+trajectories against main without running MPC, retains the terminal-exclusive
+TTT convention, and sets I-24 `start_hour=8`. Synthetic CSVs are copied unchanged.
+`results/` is moved to `results_bu/` only after the replacement has been verified;
+an existing backup is never overwritten. Optional `--source`, `--destination`
+and `--backup` arguments select other checkouts/result directories.
+
+`results/migration_manifest.json` records source hashes, output paths, checks,
+defaulted/unknown settings and missing-policy sidecars. Original JSON sidecars,
+including malformed ones, are retained in `results/_migration/source_configs/`.
+Diagnostic `test`/`tiled` policies live under nested `variants/` directories so
+ordinary reports and constraint sweeps do not count them as additional runs.
+The older sidecars do not always record horizons/initialization: documented
+defaults permit replay, but do not establish those runs' exact solver history.
+
+`save_result(..., output_dir=path)` can write a bundle to an explicit directory;
+the migration uses this to build its staged tree with the normal serializer.
+
 ## Evaluation and reporting conventions
 
 ```python
@@ -166,7 +194,7 @@ origin/queue and supplied policy. No VSL uses the simulator's unrestricted speed
 proxy, not a 150 km/h cap. `replay` recomputes histories without changing the file.
 
 The report switch is `LATEST_UPDATE` in [types.py](src/traffic_flow/types.py),
-currently `False`:
+currently `True`:
 
 | Mode | Report replay | Free-flow reference / vehicle count |
 |---|---|---|

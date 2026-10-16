@@ -5,7 +5,7 @@ from dataclasses import dataclass, replace
 from typing import NamedTuple, TypedDict
 from .config import MPCConfig
 
-LATEST_UPDATE = False # SWITCH TO MATCH NEWEST MAIN
+LATEST_UPDATE = True # SWITCH TO MATCH NEWEST MAIN
 
 hr = float
 km = float
@@ -23,7 +23,7 @@ class ScenarioSpec:
   L: km;                num_segments: int
   time_step: hr;        time_steps: int
   on_ramps: space_mask; off_ramps: space_mask
-  lanes: space_vec;     start_hour: hr = 7.5
+  lanes: space_vec;     start_hour: hr = 8
 
   def to_mpc_config(self, **kwargs) -> "MPCConfig":
     return replace(MPCConfig(
@@ -108,13 +108,22 @@ class MPCStats:
   @property
   def tts_error(self): return abs(self.gt_tt - self.sim_window_tt) / self.gt_tt * 100 
   @property
-  def cc(self): return np.clip((self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100, 0, 100)
+  def cc_unclipped(self) -> float: return (self.sim_tt - self.opt_tt) / (self.sim_tt - self.ff_tt) * 100
+  @property
+  def cc(self): return float(np.clip(self.cc_unclipped, 0, 100))
   @property
   def avg_tt_reduced_per_veh(self): return (self.sim_tt - self.opt_tt) / self.num_veh * 60
   @property
   def uncontrolled_avg_tts(self): return (self.sim_tt - self.ff_tt) / self.num_veh * 60
   @property
   def controlled_avg_tts(self): return (self.opt_tt - self.ff_tt) / self.num_veh * 60
+
+class DepartureCurves(NamedTuple):
+    time_min: time_vec
+    arrivals: time_vec
+    free_flow: time_vec
+    baseline: time_vec
+    controlled: time_vec
 
 # pyo types
 import pyomo.environ as pyo

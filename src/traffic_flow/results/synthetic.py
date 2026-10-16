@@ -17,7 +17,7 @@ from ..model.parameters import default_metanet_params
 from ..model.simulation import METANET_Simulator, MetanetState
 from ..types import MetanetParams, OptimizationResult, SimulationResult
 from .analysis import get_ff_tts
-from ..console import colored
+from ..console import colored, print_save
 
 
 @dataclass(frozen=True)
@@ -149,7 +149,7 @@ def save_synthetic_tsd(
         raise ValueError("Time-space panels must share geometry and timing settings")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "synthetic_demand_tsd.png"
+    path = output_dir / "synthetic_demand_tsd.pdf"
     duration_min = config.duration * 60
     lane_changes = (np.flatnonzero(np.diff(config.lanes)) + 1) * config.L
 
@@ -190,9 +190,9 @@ def save_synthetic_tsd(
             for tick in cbar.ax.get_yticklabels():
                 tick.set_fontname("Times New Roman")
             fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.1)
+            print_save(path)
         finally:
             plt.close(fig)
-    print(f"Saved to {colored(path, 'green')}")
     return path
 
 
@@ -211,7 +211,7 @@ def save_synthetic_cc(
         raise ValueError("Average delay requires a positive vehicle count")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "synthetic_cc_demand.png"
+    path = output_dir / "synthetic_cc_demand.pdf"
     scale = 60.0 if units == "min" else 1.0
     peaks = np.array([r.peak for r in results])
     uncontrolled = np.array([r.delay / r.num_veh * scale for r in results])
@@ -239,7 +239,7 @@ def save_synthetic_cc(
                 tick.set_fontname("Times New Roman")
             ax.set_ylim(0, np.max(uncontrolled) * 1.12)
             fig.savefig(path, dpi=300, bbox_inches="tight", pad_inches=0.1)
+            print_save(path)
         finally:
             plt.close(fig)
-    print(f"Saved to {colored(path, 'green')}")
     return path

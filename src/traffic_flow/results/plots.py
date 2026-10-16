@@ -7,7 +7,8 @@ from matplotlib.projections import register_projection
 
 from ..console import print_save
 from ..model.simulation import *
-from ..types import time_space, ScenarioSpec
+from ..types import time_space, ScenarioSpec, DepartureCurves
+from .sensitivity import SensitivityResult
 from typing import Literal
 
 preset_figsizes = {
@@ -45,6 +46,32 @@ class PlotterAxes(Axes):
     if grid: self.grid()
     return image
 
+  def plot_departures(
+    self,
+    curves: DepartureCurves,
+    duration_min: float,
+    oblique: bool = True,
+  ):
+      x = curves.time_min
+      offset = curves.arrivals[-1] * x / duration_min if oblique else 0.0
+
+      ff = curves.free_flow - offset
+      baseline = curves.baseline - offset
+      controlled = curves.controlled - offset
+
+      self.fill_between(x, ff, baseline, color="#d33b19", alpha=0.15)
+      self.fill_between(x, ff, controlled, color="#4e9858", alpha=0.30)
+      self.plot(x, ff, "k--", label="Free flow")
+      self.plot(x, baseline, color="#d33b19", label="No control")
+      self.plot(x, controlled, color="#4e9858", label="Optimal control")
+      self.axvline(duration_min, color="0.7", linewidth=1)
+      self.set(
+          xlabel="Time (min)",
+          ylabel="Departures − background" if oblique else "Departures",
+          xlim=(0, x[-1]),
+      )
+      self.grid(alpha=0.3)
+
 register_projection(PlotterAxes)
 
 class Plotter:
@@ -75,3 +102,54 @@ class Plotter:
     # plt.tight_layout()
     self.fig.savefig(*args, **kwargs)
     print_save(args[0])
+
+  def plot_param_sensitivity(self, result: SensitivityResult, show_mape: bool = True):
+    if (self.rows, self.cols) != (2, 3):
+      raise ValueError("Parameter sensitivity needs Plotter(2, 3).")
+
+    titles = {
+      "eta_high": r"$\eta$", "K": r"$\kappa$", "tau": r"$\tau$",
+      "p_crit": r"$\rho_{\mathrm{cr}}$",
+      "v_free": r"$v_{\mathrm{free}}$", "a": r"$a$",
+    }
+
+    def limits(series, nominal):
+      values = np.concatenate([*series.values(), [nominal]])
+      lo, hi = np.nanmin(values), np.nanmax(values)
+      pad = 0.05 * (hi - lo) if hi > lo else 1.0
+      return lo - pad, hi + pad
+
+    x = result.perturb_pct * 100
+    nominal_cc = result.nominal.cc_unclipped
+    nominal_mape = result.nominal.sim_error
+    cc_limits = limits(result.cc, nominal_cc)
+    cc_color = "blue" if show_mape else "orange"
+    if show_mape:
+      mape_limits = limits(result.mape, nominal_mape)
+
+    for i, key in enumerate(result.cc):
+      ax = self[i]
+      ax.plot(x, result.cc[key], color=cc_color, linewidth=2)
+      ax.plot(0, nominal_cc, "ko", markersize=5)
+      ax.axvline(0, color="black", linestyle=":", alpha=0.7)
+      ax.axhline(nominal_cc, color="black", linestyle=":", alpha=0.7)
+      ax.grid(alpha=0.3)
+      ax.set(
+        title=titles[key], xlim=(x[0], x[-1]), ylim=cc_limits,
+        xlabel="Perturbation (%)" if i >= 3 else "",
+        ylabel="CC (%)" if i % 3 == 0 else "",
+      )
+      ax.tick_params(axis="y", labelcolor=cc_color, labelleft=i % 3 == 0)
+
+      if show_mape:
+        right = ax.twinx()
+        right.plot(x, result.mape[key], color="orange", linewidth=2)
+        right.plot(0, nominal_mape, "o", color="orange", markeredgecolor="black")
+        right.set(
+          ylim=mape_limits,
+          ylabel="Sim MAPE (%)" if i % 3 == 2 else "",
+        )
+        right.tick_params(axis="y", labelcolor="orange", labelright=i % 3 == 2)
+
+    self.fig.tight_layout()
+

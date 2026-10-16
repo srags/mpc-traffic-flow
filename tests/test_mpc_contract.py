@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import traffic_flow.solvers.mpc as mpc
 from traffic_flow.solvers.mpc import MPCSolveResult
 from traffic_flow.model.parameters import load_metanet_params
-from traffic_flow.types import MetanetState
+from traffic_flow.model.simulation import MetanetState
 
 @pytest.fixture
 def solver_loading_case(monkeypatch):

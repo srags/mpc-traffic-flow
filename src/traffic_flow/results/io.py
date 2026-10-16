@@ -18,8 +18,9 @@ from tempfile import NamedTemporaryFile
 
 _GEOMETRY_FIELDS = ("lanes", "on_ramps", "off_ramps")
 
-def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file_name = "run") -> Path:
-    """Save one complete run, replacing an existing bundle only after success."""
+def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file_name = "run",
+                *, output_dir: Path | None = None) -> Path:
+    """Save a run atomically; output_dir optionally overrides its collection directory."""
     settings = {field.name: getattr(result.config, field.name) for field in fields(result.config)}
     initialization = settings.pop("initialize_vsl")
     spec = result.scenario.spec
@@ -59,7 +60,8 @@ def save_result(result: RunResult, calibration: CalRef, study: StudyChoice, file
     if any(array.dtype.hasobject for array in arrays.values()):
         raise ValueError("Run bundles cannot contain object arrays.")
 
-    output_dir = Path(collection_dir(result.scenario.spec.freeway, result.scenario.spec.date, calibration, study))
+    output_dir = Path(output_dir) if output_dir is not None else collection_dir(
+        result.scenario.spec.freeway, result.scenario.spec.date, calibration, study)
     
     path = output_dir / f"{file_name}.npz"
     output_dir.mkdir(parents=True, exist_ok=True)

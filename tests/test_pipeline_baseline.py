@@ -1,6 +1,7 @@
 """Representative numerical regressions; no solver or plot runs."""
 
 import ast
+import io
 import subprocess
 import sys
 from copy import deepcopy
@@ -15,7 +16,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from traffic_flow import load_params, load_scenario
 from traffic_flow.results.io import load_npz
-from traffic_flow.config import CalRef
+from traffic_flow.types import CalRef
 from traffic_flow.pipeline import simulate
 
 REFERENCE = "4f82654b1d6c9812f7577d21e33b1df406099edd"
@@ -23,8 +24,9 @@ MAIN_REFERENCE = "b332162f1f08acd366778a597e21c6ade026311b"
 RTOL, ATOL = 1e-10, 1e-10
 DATA = ROOT / "data/i24/i24_11_28"
 PARAMS = DATA / "calibration_static/fixed_ramping"
-# Historical policies stay in the backup; newly generated bundles stay in results.
-VSL = ROOT / "results_bu/i24/i24_11_28/calibration_static/fixed_ramping/optimal_vsl.npy"
+# Pin historical policies to the same snapshot as the numerical reference;
+# results/ and results_bu/ can be replaced without changing this regression.
+VSL = "results/i24/i24_11_28/calibration_static/fixed_ramping/optimal_vsl.npy"
 RUNS = ROOT / "results/i24/i24_11_30/calibration_static/fixed_ramping"
 
 
@@ -54,6 +56,12 @@ def baseline():
     return SimpleNamespace(**loaded)
 
 
+@pytest.fixture(scope="module")
+def historical_policy():
+    blob = subprocess.check_output(["git", "show", f"{REFERENCE}:{VSL}"], cwd=ROOT)
+    return np.load(io.BytesIO(blob), allow_pickle=False)
+
+
 def load_observations(module, initial_step=0):
     if not (DATA / "rho_hat.npy").exists():
         pytest.skip("I-24 11/28 measurements are not installed")
@@ -70,7 +78,7 @@ def load_observations(module, initial_step=0):
     pytest.param(True, False, id="measured-inflow-baseline"),
     pytest.param(False, True, id="modeled-origin-policy"),
 ])
-def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, controlled):
+def test_preparation_and_simulation_match_pre_refactor(baseline, historical_policy, real_data, controlled):
     old = load_observations(baseline.data_loader)
     scenario = load_scenario("i24", "11_28")
     spec, traffic = scenario.spec, scenario.traffic
@@ -84,9 +92,7 @@ def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, cont
 
     if not PARAMS.exists():
         pytest.skip("I-24 11/28 saved calibration is not installed")
-    if controlled and not VSL.is_file():
-        pytest.fail(f"Historical policy is missing: {VSL}")
-    controls = (np.load(VSL, allow_pickle=False) if controlled
+    controls = (historical_policy.copy() if controlled
                 else np.full((spec.time_steps, spec.num_segments), 150.))
     actual = simulate(
         scenario, load_params(scenario, calibration=CalRef()),
@@ -114,7 +120,7 @@ def test_preparation_and_simulation_match_pre_refactor(baseline, real_data, cont
                                    equal_nan=False, err_msg=name)
 
 
-def test_latest_saved_cc_run_matches_pre_refactor(baseline):
+def test_latest_saved_cc_run_matches_pinned_main(latest_main):
     # One representative new run keeps routine test time independent of sweep size.
     paths = [path for path in RUNS.glob("*.npz") if path.is_file()]
     if not paths:
@@ -122,32 +128,21 @@ def test_latest_saved_cc_run_matches_pre_refactor(baseline):
     path = max(paths, key=lambda candidate: (candidate.stat().st_mtime_ns, str(candidate)))
     before = path.read_bytes()
     run = load_npz(path)
-    spec, traffic = run.scenario.spec, run.scenario.traffic
+    spec = run.scenario.spec
     assert (spec.freeway, spec.date) == ("i24", "11_30")
     assert run.optimization.vsl.shape == (spec.time_steps, spec.num_segments)
-    for phase, controls in (
-        ("baseline", np.full_like(run.optimization.vsl, 150.)),
-        ("controlled", run.optimization.vsl.copy()),
+    for phase, controls, real_data in (
+        ("baseline", None, True),
+        ("controlled", run.optimization.vsl, False),
     ):
-        simulator = baseline.traffic_sim.METANET_Simulator(
-            T=spec.time_step, l=spec.L,
-            params={key: value.copy() for key, value in run.params.items()},
-            lanes=dict(enumerate(spec.lanes)), real_data=False,
-        )
-        expected = simulator.run_with_history(
-            np.pad(traffic.inflow, (0, 1), mode="edge"),
-            traffic.downstream_density.copy(),
-            baseline.sim_types.MetanetState(
-                traffic.initial_density.copy(), traffic.initial_velocity.copy(),
-                float(traffic.inflow[0]), 0.,
-            ),
-            controls,
-        )
-        # Saved current runs use the same terminal-density exclusion as the
-        # history API. Do not relax tolerances or accept arbitrary TTT changes.
-        terminal_road_ttt = spec.time_step * spec.L * (expected[0][-1] @ spec.lanes)
-        expected = (*expected[:-1], expected[-1] - terminal_road_ttt)
         actual = getattr(run.optimization, phase)
+        # Migrated bundles include drainage; fixed-horizon bundles remain valid.
+        # Replay their saved inputs independently with the same phase semantics.
+        until_ff = len(actual.density) > spec.time_steps + 1
+        expected = main_replay(
+            latest_main, run.scenario, run.params, controls,
+            real_data=real_data, until_ff=until_ff,
+        )
         for name, saved, previous in zip(actual._fields, actual, expected):
             assert np.shape(saved) == np.shape(previous), f"{phase}.{name}"
             assert np.isfinite(saved).all() and np.isfinite(previous).all()
@@ -169,8 +164,7 @@ def test_ttt_excludes_terminal_density_but_keeps_full_queue(monkeypatch, method,
     from unittest.mock import Mock
 
     from traffic_flow.model.parameters import default_metanet_params
-    from traffic_flow.model.simulation import METANET_Simulator
-    from traffic_flow.types import MetanetState
+    from traffic_flow.model.simulation import METANET_Simulator, MetanetState
 
     terminal_density = [0.1, 0.2] if until_ff else [500, 600]
     states = [
@@ -208,9 +202,8 @@ def test_synthetic_reports_preserve_original_replay():
     """Protect legacy trajectories and duration-limited demand totals."""
     from traffic_flow.config import SyntheticConfig
     from traffic_flow.model.parameters import default_metanet_params
-    from traffic_flow.model.simulation import METANET_Simulator
+    from traffic_flow.model.simulation import METANET_Simulator, MetanetState
     from traffic_flow.results.synthetic import SyntheticResult, load_synthetic_results
-    from traffic_flow.types import MetanetState
 
     policy_dir = ROOT / "results/synthetic_10km/demand"
     peaks = (5500, 6250)
@@ -249,7 +242,7 @@ def test_synthetic_reports_preserve_original_replay():
         # Since 702407a, generated demand has T samples, not T+1. Keep the
         # historical trajectory reference above, but exclude its extra terminal
         # demand sample from vehicle/free-flow totals, as production already does.
-        num_veh = float(np.sum(demand[:config.time_steps])) * T
+        num_veh = float(np.sum(demand)) * T
         ff = num_veh * (10.0 / float(params["v_free"][0]))
         delay, delay_c = baseline[-1] - ff, controlled[-1] - ff
         np.testing.assert_allclose(
@@ -297,10 +290,9 @@ def latest_main():
 @pytest.fixture(scope="module", params=[False, True], ids=["static", "time-varying"])
 def drain_case(request):
     """Small corridor with unequal lanes, both ramp types and a nontrivial drain."""
-    from traffic_flow.config import ScenarioSpec
     from traffic_flow.inputs.scenario import Scenario
     from traffic_flow.model.parameters import default_metanet_params
-    from traffic_flow.types import TrafficData
+    from traffic_flow.types import ScenarioSpec, TrafficData
 
     n, segments = 30, 3
     density = np.tile([15., 18., 20.], (n, 1))

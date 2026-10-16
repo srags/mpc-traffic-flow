@@ -28,7 +28,8 @@ def simulate(scenario: Scenario,
              vsl: time_space | None = None,
              steps: int | None = None,
              real_data: bool = False,
-             until_ff: bool = False) -> SimulationResult:
+             until_ff: bool = False,
+             drain_tol: float | None = None) -> SimulationResult:
   """Simulate aligned inputs, returning histories including the terminal state.
 
   With no VSL, use the simulator's unrestricted-speed default. `real_data=True`
@@ -48,6 +49,7 @@ def simulate(scenario: Scenario,
     real_data=real_data,
   )
   simulator.until_ff = until_ff
+  if drain_tol is not None: simulator.drain_tol = drain_tol
   return SimulationResult(*simulator.run_with_history(
     demand=traffic.inflow[:steps],
     downstream_density=traffic.downstream_density[:steps],

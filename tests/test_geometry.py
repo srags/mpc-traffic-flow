@@ -10,11 +10,12 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from traffic_flow.config import CalibrationConfig, RobustOptConfig, ScenarioSpec
+from traffic_flow.config import CalibrationConfig, RobustOptConfig
 from traffic_flow.inputs import scenario as scenario_module
 from traffic_flow.inputs.scenario import Scenario, prepare_traffic_data
 from traffic_flow.pipeline import calibrate
 from traffic_flow.solvers import calibration
+from traffic_flow.types import ScenarioSpec
 
 
 @pytest.mark.parametrize("missing_mask", [None, "on", "off"], ids=["ramp-files", "missing-on", "missing-off"])
@@ -41,6 +42,7 @@ def test_load_scenario_separates_geometry_from_observations(tmp_path, monkeypatc
     scenario = scenario_module.load_scenario("i24", "test", smoothing_window=None)
     spec, traffic = scenario.spec, scenario.traffic
     assert (spec.time_steps, spec.num_segments) == (3, 2)
+    assert spec.start_hour == 8.0
     np.testing.assert_array_equal(spec.lanes, [2.5, 4.])
     np.testing.assert_array_equal(spec.on_ramps, [True, False])
     np.testing.assert_array_equal(spec.off_ramps, [False, True])

@@ -33,9 +33,18 @@ pipeline DONE
 make sure I_24_table. work DONE
 analysis DONE
 run_dir into collection_dir DONE
-merge with main (IMPORTANT!) DONE
+matching with main (IMPORTANT!) DONE
 plot_constraints.ipynb
 synthetic generation
 toy network thing
 
-refactor heatmap plotting
+
+8-9 local time
+
+runnable from website
+explicitly say controllable congestion
+
+
+set very high vsl -> should be simulator (can check if pt 1 needs fix)
+
+for both calibration and vsl-ing

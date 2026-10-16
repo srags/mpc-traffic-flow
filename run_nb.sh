@@ -1,11 +1,11 @@
-python experiments/cc_plot.py
+python experiments/synthetic_analysis.py
 python experiments/table_plot.py
 python experiments/tsd_plot.py
 python experiments/constr_plot.py
 
+# How many characters saved
 git fetch origin
-
 python src/analyze_refactor.py
 
-find /Users/tristanchaang/MIT/UROP-Traffic/mpc-traffic-flow \
-  -type d -name __pycache__ -prune -exec rm -r {} +
+# Delete __pycache__ directories
+find . -type d -name __pycache__ -prune -exec rm -r {} +

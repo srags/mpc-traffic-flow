@@ -43,8 +43,8 @@ from traffic_flow.pipeline import replay
 DATE = "11_30"
 L, time_step = 0.4, 10/3600
 SWEEP_ROOT = REPO_DIR / "results_bu" / "i24" / f"i24_{DATE}" / CalSource.FIXED_RAMPS
-SAVE_PATH = REPO_DIR / "figs" / "constr_plot" / "i24_constraints.png"
-HEATMAP_SAVE_PATH = REPO_DIR / "figs" / "constr_plot" / "i24_safety_heatmap.png"
+SAVE_PATH = REPO_DIR / "figs" / "constr_plot" / "i24_constraints.pdf"
+HEATMAP_SAVE_PATH = REPO_DIR / "figs" / "constr_plot" / "i24_safety_heatmap.pdf"
 
 # Fixed value of the *other* bound in each smoothness slice, in km/hr. Chosen
 # for coverage: these rows/columns of the grid have the most successful runs.

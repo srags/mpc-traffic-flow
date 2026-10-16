@@ -50,6 +50,16 @@ def ff_tts_vkm(density: time_space, velocity: time_space, lane_counts: space_vec
     veh_km = (density * velocity * lane_counts).sum(axis=0) * time_step * length
     return float((veh_km / v_free).sum())
 
+def departure_rates(
+    density: time_space,
+    velocity: time_space,
+    lane_counts: space_vec,
+    beta: space_vec | time_space,
+) -> time_vec:
+    if beta.ndim == 2: beta = beta[np.minimum(np.arange(len(density)), len(beta) - 1)]
+    q = density * velocity * lane_counts
+    return q[:, -1] + (q * beta / (1 - beta)).sum(axis=1)
+
 def vehicles_served(density: time_space, velocity: time_space, lane_counts: space_vec, 
                     beta: space_vec | time_space, time_step: hr):
     """Vehicles that left the corridor over a run.
@@ -61,9 +71,7 @@ def vehicles_served(density: time_space, velocity: time_space, lane_counts: spac
     are too large by that factor. Over a run that drains (`until_ff=True`) this equals
     the vehicles that entered.
     """
-    q = density * velocity * lane_counts
-    departures = q[:, -1] + (q * beta / (1 - beta)).sum(axis=1)
-    return float(departures.sum() * time_step)
+    return float(departure_rates(density, velocity, lane_counts, beta).sum() * time_step)
 
 HOLIDAY_DATES = {(11, 24), (11, 25)}
 def format_date_label(date_str: str, year=2022):
@@ -96,3 +104,103 @@ def run_analysis(run: RunResult) -> MPCStats:
 
 def run_analysis_direct(scenario: Scenario, params: MetanetParams, result: OptimizationResult) -> MPCStats:
     return run_analysis(RunResult(scenario, params, scenario.spec.to_mpc_config(), result))
+
+
+
+
+
+
+def free_flow_departures(
+    scenario: Scenario,
+    params: MetanetParams,
+    n_steps: int,
+) -> tuple[time_vec, time_vec]:
+    """Cumulative arrivals and departures if every vehicle ran at v_free.
+
+    Same arrivals and splits as the simulated runs, on a grid of `n_steps` steps of
+    `time_step`. Each arrival stream (mainline demand, each on-ramp, and the vehicles
+    already in the corridor at t=0) is spread over its free-flow exit times. METANET
+    removes ramp traffic as a sink on a segment's own outflow, so those vehicles cover
+    no distance in the segment they leave at: split first, then charge the traversal
+    time. Returns (arrivals, departures), both cumulative vehicle counts.
+
+    Ported from experiments/capacity_drop_diagnostics.ipynb.
+    """
+    spec, traffic = scenario.spec, scenario.traffic
+    time_step, L = spec.time_step, spec.L
+
+    if any(x.ndim != 1 for x in (params["v_free"], params["r"], params["beta"])):
+        raise ValueError("Free-flow departure curves currently require static parameters.")
+
+    n_seg = spec.num_segments
+    lanes = np.asarray(spec.lanes, dtype=float)
+    t_grid = np.arange(n_steps) * time_step                # hours
+    tau = L / np.asarray(params["v_free"], dtype=float)    # free-flow traversal, hours
+    beta, r = np.asarray(params["beta"], float), np.asarray(params["r"], float)
+    n_dem = traffic.inflow.shape[0]
+    D = np.zeros(n_steps)
+    A = np.zeros(n_steps)
+
+    def on_grid(per_step_veh):
+        c = np.cumsum(per_step_veh)
+        out = np.full(n_steps, c[-1])
+        out[: len(c)] = c
+        return out
+
+    def add_stream(cum_arrivals, enter_seg, head_start=0.0):
+        nonlocal D, A
+        A = A + cum_arrivals
+        surv, elapsed = 1.0, head_start
+        for j in range(enter_seg, n_seg):
+            if beta[j] > 0:
+                D = D + surv * beta[j] * np.interp(t_grid - elapsed, t_grid, cum_arrivals, left=0.0)
+            surv *= 1 - beta[j]
+            elapsed += tau[j]
+        D = D + surv * np.interp(t_grid - elapsed, t_grid, cum_arrivals, left=0.0)
+
+    add_stream(on_grid(traffic.inflow * time_step), 0)
+    n0 = traffic.initial_density * lanes * L                  # vehicles already in each segment
+    for i in range(n_seg):
+        if r[i] > 1e-6:
+            add_stream(on_grid(np.full(n_dem, r[i] * time_step)), i)
+        if n0[i] > 1e-9:                                   # released from mid-segment
+            add_stream(on_grid(np.r_[n0[i], np.zeros(n_dem - 1)]), i, head_start=-0.5 * tau[i])
+    return A, D
+
+
+def departure_curves(
+    run: RunResult,
+    drain_tol: float = 3.0,
+) -> DepartureCurves:
+    from ..pipeline import simulate
+
+    scenario, params = run.scenario, run.params
+    spec = scenario.spec
+
+    baseline, controlled = (
+        simulate(
+            scenario, params, vsl=vsl,
+            real_data=False, until_ff=True, drain_tol=drain_tol,
+        )
+        for vsl in (None, run.optimization.vsl)
+    )
+
+    n_steps = max(len(baseline.density), len(controlled.density)) - 1
+
+    def cumulative(sim: SimulationResult) -> time_vec:
+        rates = departure_rates(
+            sim.density[:-1], sim.velocity[:-1],
+            spec.lanes, params["beta"],
+        )
+        counts = np.cumsum(rates) * spec.time_step
+        return np.pad(counts, (0, n_steps - len(counts)), mode="edge")
+
+    arrivals, free_flow = free_flow_departures(scenario, params, n_steps)
+
+    return DepartureCurves(
+        np.arange(n_steps) * spec.time_step * 60,
+        arrivals,
+        free_flow,
+        cumulative(baseline),
+        cumulative(controlled),
+    )

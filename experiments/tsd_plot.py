@@ -23,7 +23,7 @@ from traffic_flow import load_one_result, load_scenario, CalRef, CalSource, LATE
 
 from traffic_flow.console import print_file, print_table
 from traffic_flow.results.plots import Plotter
-from traffic_flow.results.analysis import format_date_label, run_analysis
+from traffic_flow.results.analysis import departure_curves, format_date_label, run_analysis
 from traffic_flow.pipeline import replay
 
 DATES = ["11_28", "11_29", "11_30", "12_01", "12_02"]
@@ -38,7 +38,7 @@ if __name__ == "__main__":
   extent = (0, duration_min, 0, corridor_km)
   vmax = float(np.ceil(max(load_scenario("i24", date).traffic.velocity.max() for date in DATES) / 10) * 10)
 
-  n_rows, n_cols = len(DATES), 3
+  n_rows, n_cols = len(DATES), 4
   p = Plotter(n_rows, n_cols, figsize=(4.6 * n_cols, 3.6 * n_rows))
 
   table = []
@@ -52,7 +52,7 @@ if __name__ == "__main__":
       ["Observed", "No control", "Optimal control"], 
       [run.scenario.traffic.velocity, run.optimization.baseline.velocity[:n_time], run.optimization.controlled.velocity[:n_time]]
       )):
-      head = f"({'abcdefghijklmno'[row * n_cols + col]}) {format_date_label(date)}, {title}"
+      head = f"({chr(ord('a') + row * n_cols + col)}) {format_date_label(date)}, {title}"
       if title == "No control": 
         head += f"\nDelay = {stats.sim_tt - stats.ff_tt:.0f} veh-hrs"
       elif title == "Optimal control": 
@@ -60,10 +60,11 @@ if __name__ == "__main__":
       im = p[row, col].plot_time_space(tsd, run.scenario.spec, vmax, title=head, colorbar=None)
       p[row, col].axhline(CONTROL_ZONE_START_SEGMENT, color="blue", linestyle="--", linewidth=2.5)
       p[row, col].set(ylabel="Distance (km)" if col == 0 else "", xlabel=None)
+    p[row, 3].plot_departures(departure_curves(run), run.scenario.spec.time_steps * run.scenario.spec.time_step * 60)  
   p.fig.tight_layout(rect=(0, 0, 0.9, 1), h_pad=1.5, w_pad=0.5)
   cbar_ax = p.fig.add_axes((0.91, 0.05, 0.015, 0.90))
   cbar = p.fig.colorbar(im, cax=cbar_ax)
   cbar.set_label("Velocity (km/hr)")
   print_table(headers=["Date", "TTT (vhr)", "Delay (vhr)", "CC (%)"], data=table)
-  p.savefig(REPO_DIR / "figs" / "tsd_plot" / "tsd.png", dpi=300, bbox_inches="tight", pad_inches=0.1)
+  p.savefig(REPO_DIR / "figs" / "tsd_plot" / "tsd_cumulative.pdf", dpi=300, bbox_inches="tight", pad_inches=0.1)
   

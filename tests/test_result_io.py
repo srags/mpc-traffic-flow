@@ -15,10 +15,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from traffic_flow import save_result
 from traffic_flow.results.io import load_npz
-from traffic_flow.config import CalRef, InitMode, MPCConfig, ScenarioSpec, Study
+from traffic_flow.config import InitMode, MPCConfig, Study
 from traffic_flow.inputs.scenario import Scenario, prepare_traffic_data
 from traffic_flow.model.parameters import default_metanet_params
-from traffic_flow.types import OptimizationResult, RunResult, SimulationResult
+from traffic_flow.types import CalRef, OptimizationResult, RunResult, ScenarioSpec, SimulationResult
 import traffic_flow.paths as paths
 import traffic_flow.results.analysis as analysis
 import traffic_flow.results.io as result_io
@@ -72,7 +72,7 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result, has_ramps):
                        off_ramps=np.zeros(spec.num_segments, dtype=bool))
     run_result = replace(run_result, scenario=replace(run_result.scenario, spec=spec))
     original = deepcopy(run_result)
-    assert original.scenario.spec.start_hour == 7.5
+    assert original.scenario.spec.start_hour == 8.0
     path = save_result(run_result, calibration=CalRef("custom_fit"), study=None, file_name="trial")
     directory = tmp_path / "results/test/test_day/custom_fit"
     assert path == directory / "trial.npz"
@@ -84,7 +84,7 @@ def test_complete_run_round_trip(tmp_path, monkeypatch, run_result, has_ramps):
         assert "traffic.lanes" not in archive.files
         assert all(not archive[name].dtype.hasobject for name in archive.files)
     assert metadata["schema_version"] == 3
-    assert metadata["scenario"]["start_hour"] == 7.5
+    assert metadata["scenario"]["start_hour"] == 8.0
     assert "start_time" not in metadata["scenario"]
     assert not {"lanes", "on_ramps", "off_ramps"} & metadata["scenario"].keys()
 
@@ -230,7 +230,7 @@ def viewer(tmp_path, monkeypatch):
     return viewer
 
 
-@pytest.mark.parametrize("dataset,start_hour", [("i24", 7.5), ("i24", 7.75), ("test", 8.25)])
+@pytest.mark.parametrize("dataset,start_hour", [("i24", 8.0), ("i24", 7.5), ("i24", 7.75), ("test", 8.25)])
 def test_viewer_uses_saved_clock_hour_without_adding_an_origin(run_result, viewer, dataset, start_hour):
     spec = replace(run_result.scenario.spec, freeway=dataset, start_hour=start_hour)
     run = replace(run_result, scenario=replace(run_result.scenario, spec=spec))

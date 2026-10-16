@@ -11,14 +11,14 @@ from traffic_flow import load_one_result, CalRef, CalSource, LATEST_UPDATE
 from traffic_flow.pipeline import replay
 
 # ── Dates to sweep ───────────────────────────────────────────────────────────
-STATIC_DATES = ["11_28", "11_29", "11_30"]
+STATIC_DATES = ["11_21", "11_22", "11_23", "11_24", "11_25", "11_28", "11_29", "11_30", "12_01", "12_02"]
 DYNAMIC_DATES = ["11_30"]
 SAVE_PATH = REPO_DIR / "figs" / "table_plot"
 SAVE_PATH.mkdir(parents=True, exist_ok=True)
 
 def main():
-  run_static_analysis(STATIC_DATES, table_save=SAVE_PATH/"cc_table.png", tex_save=SAVE_PATH/"cc_table.tex", bar_chart_save=SAVE_PATH/"cc_bar_chart.png")
-  run_dynamic_analysis(DYNAMIC_DATES, table_save=SAVE_PATH/"cc_table_withdyn.png")
+  run_static_analysis(STATIC_DATES, table_save=SAVE_PATH/"cc_table.pdf", tex_save=SAVE_PATH/"cc_table.tex", bar_chart_save=SAVE_PATH/"cc_bar_chart.pdf")
+  run_dynamic_analysis(DYNAMIC_DATES, table_save=SAVE_PATH/"cc_table_withdyn.pdf")
 
 def run_static_analysis(dates, table_save, tex_save, bar_chart_save):
   print_title("Static-only CC sweep")
